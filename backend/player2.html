@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Quiz Game</title>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    #questionBox { margin-top: 20px; }
+    .option { display: block; margin: 8px 0; }
+    #leaderboard { margin-top: 30px; border-collapse: collapse; width: 60%; }
+    #leaderboard th, #leaderboard td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    #leaderboard th { background: #4CAF50; color: white; }
+  </style>
+</head>
+<body>
+  <h1>Quiz Game</h1>
+
+  <!-- Login -->
+  <div id="loginBox">
+    <label>Enter User ID:</label>
+    <input type="number" id="userIdInput">
+    <button onclick="joinGame()">Join Game</button>
+  </div>
+
+  <!-- Game -->
+  <div id="gameBox" style="display:none;">
+    <div id="questionBox"></div>
+    <div id="result"></div>
+    <h2>Leaderboard</h2>
+    <table id="leaderboard">
+      <thead>
+        <tr><th>Rank</th><th>Username</th><th>Score</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    const socket = io("http://localhost:3000"); // change if deployed
+    let userId = null;
+
+    function joinGame() {
+      userId = document.getElementById("userIdInput").value;
+      if (!userId) {
+        alert("Enter a valid User ID");
+        return;
+      }
+      document.getElementById("loginBox").style.display = "none";
+      document.getElementById("gameBox").style.display = "block";
+    }
+
+    // Receive question from server
+    socket.on("newQuestion", (q) => {
+      const box = document.getElementById("questionBox");
+      box.innerHTML = `
+        <h2>${q.text}</h2>
+        <button class="option" onclick="sendAnswer('A')">${q.options.A}</button>
+        <button class="option" onclick="sendAnswer('B')">${q.options.B}</button>
+        <button class="option" onclick="sendAnswer('C')">${q.options.C}</button>
+        <button class="option" onclick="sendAnswer('D')">${q.options.D}</button>
+      `;
+      document.getElementById("result").innerHTML = "";
+    });
+
+    // Send answer
+    function sendAnswer(answer) {
+      if (!userId) return alert("Not logged in!");
+      socket.emit("submitAnswer", { user_id: userId, answer });
+    }
+
+    // Show result
+    socket.on("answerResult", (msg) => {
+      document.getElementById("result").innerText = msg;
+    });
+
+    // Update leaderboard
+    socket.on("leaderboardUpdate", (data) => {
+      const tbody = document.querySelector("#leaderboard tbody");
+      tbody.innerHTML = "";
+      data.forEach((p, i) => {
+        tbody.innerHTML += `
+          <tr>
+            <td>${i+1}</td>
+            <td>${p.username}</td>
+            <td>${p.score}</td>
+          </tr>
+        `;
+      });
+    });
+
+    // Game over
+    socket.on("gameOver", (msg) => {
+      document.getElementById("questionBox").innerHTML = `<h2>${msg.message}</h2>`;
+    });
+  </script>
+</body>
+</html>

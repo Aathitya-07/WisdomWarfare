@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Wisdom Warfare Admin</title>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+  <h1>Admin Panel</h1>
+
+  <h2>Add Question</h2>
+  <form id="addQ">
+    <input type="text" id="text" placeholder="Question" required><br>
+    <input type="text" id="a" placeholder="Option A"><br>
+    <input type="text" id="b" placeholder="Option B"><br>
+    <input type="text" id="c" placeholder="Option C"><br>
+    <input type="text" id="d" placeholder="Option D"><br>
+    <input type="text" id="correct" placeholder="Correct (A/B/C/D)" required><br>
+    <button type="submit">Add Question</button>
+  </form>
+
+  <h2>Start Question</h2>
+  <button id="startQ">Broadcast Random Question</button>
+
+  <script>
+    const socket = io("http://localhost:3000");
+
+    // Add Question
+    document.getElementById("addQ").onsubmit = async (e) => {
+      e.preventDefault();
+      const q = {
+        text: document.getElementById("text").value,
+        option_a: document.getElementById("a").value,
+        option_b: document.getElementById("b").value,
+        option_c: document.getElementById("c").value,
+        option_d: document.getElementById("d").value,
+        correct: document.getElementById("correct").value
+      };
+      await fetch("http://localhost:3000/questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(q)
+      });
+      alert("Question Added!");
+    };
+
+    // Start Question
+    document.getElementById("startQ").onclick = () => {
+      socket.emit("adminStartQuestion");
+    };
+  </script>
+</body>
+</html>

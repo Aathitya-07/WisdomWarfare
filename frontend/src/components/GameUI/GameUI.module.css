@@ -1,0 +1,24 @@
+.gameContainer {
+  display: grid;
+  grid-template-areas:
+    "topbar topbar topbar"
+    "progress progress progress"
+    "ranking question missions"
+    "bottombar bottombar bottombar";
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-columns: 250px 1fr 250px; /* Adjust as needed */
+  gap: 20px;
+  height: calc(100vh - 100px); /* Example height */
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.topBar { grid-area: topbar; }
+.progressBarArea { grid-area: progress; }
+.playerRanking { grid-area: ranking; }
+.questionBox { grid-area: question; }
+.sideMissions { grid-area: missions; }
+.bottomBar { grid-area: bottombar; }

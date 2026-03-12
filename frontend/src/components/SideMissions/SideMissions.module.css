@@ -1,0 +1,79 @@
+.missionsContainer {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.titleHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #00d4ff;
+  letter-spacing: 2px;
+  margin-bottom: 1.5rem;
+}
+.title {
+  margin: 0;
+}
+
+.missionList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  flex-grow: 1;
+}
+
+.missionItem {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding: 10px;
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: 4px;
+}
+
+.missionIcon {
+  font-size: 1.5rem;
+  margin-right: 1rem;
+  color: #00d4ff;
+}
+
+.missionDetails p {
+  margin: 0;
+   color: #00d4ff;
+  flex-grow: 1;
+}
+
+.missionArrow {
+  margin-left: auto;
+  color: #00d4ff;
+}
+
+.lightningRound {
+  margin-top: auto;
+  background-color: #5c0000;
+  border: 1px solid #ff4d4d;
+  color: #ffc2c2;
+  padding: 10px;
+  text-align: center;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alertIcon {
+  color: #ff4d4d;
+  font-weight: bold;
+  margin-right: 10px;
+  background-color: #ffc2c2;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -1,0 +1,11 @@
+text,option_a,option_b,option_c,option_d,correct,difficulty
+"Who is known as the father of computers?","Charles Babbage","Alan Turing","John von Neumann","Bill Gates","Charles Babbage","Easy"
+"Which planet is known as the Red Planet?","Earth","Mars","Jupiter","Saturn","Mars","Easy"
+"What is the capital city of France?","London","Berlin","Madrid","Paris","Paris","Easy"
+"Which data structure uses FIFO principle?","Stack","Queue","Tree","Graph","Queue","Medium"
+"Who developed the theory of relativity?","Isaac Newton","Albert Einstein","Galileo Galilei","Nikola Tesla","Albert Einstein","Medium"
+"What does HTTP stand for?","HyperText Transfer Protocol","HighText Transfer Program","HyperTransfer Text Process","Home Tool Transfer Protocol","HyperText Transfer Protocol","Medium"
+"Which is the largest ocean on Earth?","Atlantic Ocean","Indian Ocean","Pacific Ocean","Arctic Ocean","Pacific Ocean","Medium"
+"In which year did World War II end?","1940","1945","1950","1939","1945","Hard"
+"Which programming language is primarily used for iOS app development?","Python","Swift","Java","C++","Swift","Medium"
+"What is the chemical symbol for Gold?","Ag","Au","Gd","Go","Au","Easy"
