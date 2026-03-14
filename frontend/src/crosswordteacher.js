@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from "react";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const CROSSWORD_API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 /* ----------------------------------------------------
    CROSSWORD MODALS & COMPONENTS
@@ -36,7 +37,7 @@ export function AddOrEditCrosswordModal({ onClose, onSaved, initialData = null }
         // EDIT MODE
         if (!id) throw new Error("Missing Question ID for update");
         
-        await fetch(`${API_BASE}/crossword/questions/${id}`, {
+        await fetch(`${CROSSWORD_API_BASE}/crossword/questions/${id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ question, answer }),
@@ -44,7 +45,7 @@ export function AddOrEditCrosswordModal({ onClose, onSaved, initialData = null }
         alert("✅ Crossword Question Updated!");
       } else {
         // ADD MODE
-        await fetch(`${API_BASE}/crossword/questions`, {
+        await fetch(`${CROSSWORD_API_BASE}/crossword/questions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ question, answer }),
@@ -116,7 +117,7 @@ export function UploadCrosswordQsModal({ onClose, onInserted }) {
     fd.append("file", file);
 
     try {
-      const res = await fetch(`${API_BASE}/crossword/questions/upload`, {
+      const res = await fetch(`${CROSSWORD_API_BASE}/crossword/questions/upload`, {
         method: "POST",
         body: fd,
       });
@@ -250,18 +251,18 @@ export function ViewCrosswordQuestionsModal({ questions, onClose, onEdit, onDele
    CROSSWORD UTILITY FUNCTIONS
    ---------------------------------------------------- */
 
-export async function startCrosswordGame(questions) {
+export async function startCrosswordGame(gameCode) {
   try {
-    if (!Array.isArray(questions) || questions.length === 0) {
-      throw new Error("No crossword questions available");
+    if (!gameCode) {
+      throw new Error("Game code is required");
     }
 
-    console.log(`🎮 Starting crossword game with ${questions.length} questions`);
+    console.log(`🎮 Starting crossword game with code: ${gameCode}`);
 
-    const res = await fetch(`${API_BASE}/crossword/start-game`, {
+    const res = await fetch(`${CROSSWORD_API_BASE}/crossword/start-game`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ questions }),
+      body: JSON.stringify({ game_code: gameCode }),
     });
 
     const data = await res.json();
@@ -280,16 +281,38 @@ export async function startCrosswordGame(questions) {
 
 export async function fetchCrosswordQuestions() {
   try {
-    const res = await fetch(`${API_BASE}/crossword/questions`);
+    const res = await fetch(`${CROSSWORD_API_BASE}/crossword/questions`);
     const data = await res.json();
     
+    let questions = [];
     if (Array.isArray(data)) {
-      return data;
+      questions = data;
     } else if (data.questions && Array.isArray(data.questions)) {
-      return data.questions;
-    } else {
-      return [];
+      questions = data.questions;
     }
+    
+    // If no questions exist, seed the database
+    if (questions.length === 0) {
+      console.log("📊 No crossword questions found, seeding database...");
+      try {
+        const seedRes = await fetch(`${CROSSWORD_API_BASE}/crossword/seed-questions`, {
+          method: "POST"
+        });
+        const seedData = await seedRes.json();
+        console.log("✅ Seed result:", seedData);
+        
+        // Retry fetch after seeding
+        const retryRes = await fetch(`${CROSSWORD_API_BASE}/crossword/questions`);
+        const retryData = await retryRes.json();
+        questions = (retryData.questions && Array.isArray(retryData.questions)) 
+          ? retryData.questions 
+          : (Array.isArray(retryData) ? retryData : []);
+      } catch (seedError) {
+        console.warn("Could not seed questions:", seedError);
+      }
+    }
+    
+    return questions;
   } catch (error) {
     console.error("Error fetching crossword questions:", error);
     return [];
@@ -304,7 +327,7 @@ export async function deleteCrosswordQuestion(id) {
   }
 
   try {
-    const res = await fetch(`${API_BASE}/crossword/questions/${id}`, {
+    const res = await fetch(`${CROSSWORD_API_BASE}/crossword/questions/${id}`, {
       method: "DELETE",
     });
 
@@ -323,7 +346,7 @@ export async function deleteCrosswordQuestion(id) {
 
 export async function fetchCrosswordRanks() {
   try {
-    const res = await fetch(`${API_BASE}/crossword/leaderboard`);
+    const res = await fetch(`${CROSSWORD_API_BASE}/crossword/leaderboard`);
     const data = await res.json();
     return data || [];
   } catch (error) {
@@ -334,7 +357,7 @@ export async function fetchCrosswordRanks() {
 
 export async function downloadCrosswordResults() {
   try {
-    const res = await fetch(`${API_BASE}/crossword/download-results`);
+    const res = await fetch(`${CROSSWORD_API_BASE}/crossword/download-results`);
     if (!res.ok) {
       alert("Failed to download crossword results");
       return false;

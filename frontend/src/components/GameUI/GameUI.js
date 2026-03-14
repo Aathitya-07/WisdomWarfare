@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 import { formatAccuracy } from '../../utils/helpers';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:4001';
+const CROSSWORD_SOCKET_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || 'http://localhost:4002';
 
 const GameUI = ({ user, onLogout }) => {
   const navigate = useNavigate();
@@ -186,6 +187,19 @@ const GameUI = ({ user, onLogout }) => {
   const [showWinnerAnimation, setShowWinnerAnimation] = useState(false);
   const [cellInputs, setCellInputs] = useState({});
   const [crosswordClues, setCrosswordClues] = useState([]);
+  
+  // ✅ NEW: Game timer and winner states
+  const [gameTimer, setGameTimer] = useState({
+    gameActive: false,
+    timeRemaining: 0,
+    timeRemainingSeconds: 0,
+    startTime: null,
+    endTime: null,
+    totalWords: 0,
+    gameExpired: false
+  });
+  const [gameWinner, setGameWinner] = useState(null);
+  const [hasGameEnded, setHasGameEnded] = useState(false);
 
   const timerRef = useRef(null);
   const socketRef = useRef(null);
@@ -394,12 +408,14 @@ const GameUI = ({ user, onLogout }) => {
       socketRef.current = null;
     }
     
-    const newSocket = io(API_BASE, {
+    const newSocket = io(gameType === "A. Crossword" ? CROSSWORD_SOCKET_BASE : API_BASE, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000
     });
+    
+    console.log(`🔌 Connecting to ${gameType === "A. Crossword" ? "Crossword" : "Wisdom Warfare"} server at:`, gameType === "A. Crossword" ? CROSSWORD_SOCKET_BASE : API_BASE);
 
     socketRef.current = newSocket;
     setSocket(newSocket);
@@ -466,13 +482,11 @@ const GameUI = ({ user, onLogout }) => {
         newSocket.emit('getGameStatus', { game_code: gameCode || null });
         fetchLeaderboard();
       } else if (gameType === "A. Crossword") {
-        // Initialize crossword game
-        newSocket.emit('crosswordJoin', {
-          game_code: gameCode || null,
-          user_id: user?.user_id || user?.uid || null,
-          email: user?.email || null
-        });
-        fetchCrosswordLeaderboard();
+        // ✅ joinGame already sent above - it handles crossword initialization
+        // ✅ Fetch initial leaderboard after a short delay to allow server to create session
+        setTimeout(() => {
+          fetchCrosswordLeaderboard();
+        }, 300);
       }
     };
 
@@ -577,6 +591,63 @@ const GameUI = ({ user, onLogout }) => {
       setLeaderboard(Array.isArray(data) ? data : []);
     };
 
+    const onCrosswordLeaderboardUpdate = (data) => {
+      console.log('📊 Crossword live leaderboard updated:', data);
+      if (!mountedRef.current || gameType !== "A. Crossword") return;
+      
+      // ✅ ISOLATION: Verify game code matches
+      if (data.game_code && data.game_code !== gameCode) {
+        console.log('⚠️ Ignoring crossword leaderboard from different game code:', data.game_code);
+        return;
+      }
+      
+      // ✅ Don't update if player exited
+      if (waitingForFreshStartRef.current) {
+        console.log('⏸️ Ignoring crossword leaderboard - player exited, waiting for fresh game start');
+        return;
+      }
+      
+      // ✅ FIX: Handle both array and object responses
+      if (Array.isArray(data)) {
+        console.log('✅ Setting leaderboard from array:', data);
+        setLeaderboard(data);
+      } else if (data.leaderboard && Array.isArray(data.leaderboard)) {
+        console.log('✅ Setting leaderboard from object.leaderboard:', data.leaderboard);
+        setLeaderboard(data.leaderboard);
+      } else {
+        console.warn('⚠️ Unexpected leaderboard data format:', data);
+      }
+    };
+
+    // ✅ NEW: Handle player list updates during waiting state
+    const onPlayerListUpdate = (data) => {
+      console.log('👥 Player list updated:', data);
+      if (!mountedRef.current || gameType !== "A. Crossword") return;
+      
+      // ✅ ISOLATION: Verify game code matches
+      if (data.game_code && data.game_code !== gameCode) {
+        console.log('⚠️ Ignoring player list from different game code:', data.game_code);
+        return;
+      }
+      
+      // ✅ CRITICAL: Update player list whenever we receive it (not just during waiting)
+      // This ensures player count syncs in real-time as players join
+      if (data.players && Array.isArray(data.players)) {
+        // Format player data for leaderboard display
+        const playerDisplay = data.players.map((player, index) => ({
+          user_id: player.user_id,
+          email: player.email,
+          display_name: player.display_name || player.email?.split('@')[0] || `Player_${index + 1}`,
+          current_score: 0,
+          correct_answers: 0,
+          questions_answered: 0,
+          accuracy: 0
+        }));
+        setLeaderboard(playerDisplay);
+        console.log(`✅ Updated player list display: ${playerDisplay.length} players IN GAME`);
+      }
+    };
+
     // Wisdom Warfare specific events
     const onGameStatus = (status) => {
       console.log('📊 Game status received:', status);
@@ -628,10 +699,9 @@ const GameUI = ({ user, onLogout }) => {
         console.log('⚠️ Ignoring game started from different game code:', data.game_code);
         return;
       }
-      // ✅ Clear waitingForFreshStart flag - player can now see questions
-      waitingForFreshStartRef.current = false; // ✅ INSTANT unblock via ref
-      playerExitedRef.current = false; // ✅ Clear exit tracking
-      // ✅ NOW clear the EXITED_ flag and completion data from localStorage - fresh game has started
+      // ✅ Clear waitingForFreshStart flag - player can now see game
+      waitingForFreshStartRef.current = false;
+      playerExitedRef.current = false;
       try {
         localStorage.removeItem(`EXITED_${gameCode}`);
         localStorage.removeItem(`GAME_COMPLETED_${gameCode}`);
@@ -640,12 +710,40 @@ const GameUI = ({ user, onLogout }) => {
       }
       setGameCompleted(false);
       setFinalResults(null);
-      setGameStatus((prev) => ({ 
-        ...prev, 
+      
+      // ✅ NEW: Initialize game timer from backend data
+      if (data.gameDuration && data.gameStartTime && data.gameEndTime) {
+        setGameTimer({
+          gameActive: true,
+          timeRemaining: data.gameDuration,
+          timeRemainingSeconds: Math.ceil(data.gameDuration / 1000),
+          startTime: data.gameStartTime,
+          endTime: data.gameEndTime,
+          totalWords: data.totalWords || 0,
+          gameExpired: false
+        });
+        console.log(`⏱️ Game timer initialized: ${data.totalWords} words, ${Math.ceil(data.gameDuration / 1000)}s duration`);
+      }
+      
+      setGameStatus((prev) => ({
+        ...prev,
         isGameActive: true,
-        waitingForFreshStart: false
+        waitingForFreshStart: false,
+        gameSessionId: data.gameSessionId  // ✅ STORE SESSION ID
       }));
-      console.log('✅ Fresh game started - unblocked questions via REF');
+      console.log('✅ Game started - session ID:', data.gameSessionId);
+    };
+
+    const onGameWinner = (data) => {
+      console.log('🏆 Game Winner announced:', data);
+      if (!mountedRef.current || gameType !== "A. Crossword") return;
+
+      // ✅ Set the game winner
+      if (data.winner) {
+        setGameWinner(data.winner);
+        setHasGameEnded(true);
+        console.log(`🎉 Winner: ${data.winner.playerName} completed all ${data.winner.totalWords} words!`);
+      }
     };
 
     const onNewQuestion = (question) => {
@@ -1027,44 +1125,80 @@ const GameUI = ({ user, onLogout }) => {
       console.log('🧩 Crossword grid received:', data);
       if (!mountedRef.current || gameType !== "A. Crossword") return;
       
-      // Store the grid data
-      if (data.grid && data.acrossClues && data.downClues && data.cellNumbers) {
-        setCrosswordData(data);
-      } else if (data.grid && data.clues) {
-        // Transform old format to new format
-        const acrossClues = data.clues.filter(clue => clue.direction === 'across');
-        const downClues = data.clues.filter(clue => clue.direction === 'down');
+      // ✅ DEBUG: Log grid structure
+      if (data.grid && data.grid.length > 0) {
+        console.log('Grid dimensions:', data.grid.length, 'x', data.grid[0].length);
+        console.log('First row sample:', data.grid[0].slice(0, 5));
+        console.log('Grid structure - first 3 rows:', data.grid.slice(0, 3).map(row => row.slice(0, 5)));
         
-        // Generate cell numbers if not provided
-        const cellNumbers = data.cellNumbers || {};
-        
-        setCrosswordData({
-          grid: data.grid,
-          acrossClues,
-          downClues,
-          cellNumbers
-        });
-      }
-      
-      // Initialize empty inputs for all editable cells
-      const inputs = {};
-      if (data.grid) {
-        data.grid.forEach((row, rowIndex) => {
-          row.forEach((cell, colIndex) => {
-            if (cell === '.' || cell === ' ') {
-              inputs[`${rowIndex}-${colIndex}`] = '';
+        // Count cell types
+        let blackCount = 0, whiteCount = 0, otherCount = 0;
+        data.grid.forEach((row, rowIdx) => {
+          row.forEach((cell, colIdx) => {
+            if (cell === '#') blackCount++;
+            else if (cell === '.' || cell === ' ' || cell) whiteCount++;
+            else {
+              otherCount++;
+              if (rowIdx < 2 && colIdx < 2) {
+                console.log(`  Unexpected cell at (${rowIdx},${colIdx}): "${cell}" (type: ${typeof cell})`);
+              }
             }
           });
         });
+        console.log(`📊 Grid breakdown: ${blackCount} black (#), ${whiteCount} white (. or space or other), ${otherCount} null/undefined`);
       }
+      
+      // ✅ ISOLATION: Verify game code matches
+      if (data.game_code && data.game_code !== gameCode) {
+        console.log('⚠️ Ignoring grid from different game code:', data.game_code);
+        return;
+      }
+      
+      if (waitingForFreshStartRef.current) {
+        console.log('⏸️ Ignoring grid - player exited, waiting for fresh game start');
+        return;
+      }
+      
+      if (!data.grid) {
+        console.warn('⚠️ No grid data in crosswordGrid event');
+        return;
+      }
+      
+      // ✅ FIXED: Backend sends clues as { across: [], down: [] }, not as flat array
+      const acrossClues = (data.clues?.across || data.acrossClues || []);
+      const downClues = (data.clues?.down || data.downClues || []);
+      
+      console.log('📋 Clues structure:', {
+        hasCluesObject: !!data.clues,
+        acrossCount: acrossClues.length,
+        downCount: downClues.length
+      });
+      
+      setCrosswordData({
+        grid: data.grid,
+        acrossClues: acrossClues,
+        downClues: downClues,
+        cellNumbers: data.cellNumbers || {}
+      });
+      
+      // Initialize empty inputs for all editable cells
+      const inputs = {};
+      data.grid.forEach((row, rowIndex) => {
+        row.forEach((cell, colIndex) => {
+          if (cell === '.' || cell === ' ' || !cell || cell === '#') {
+            inputs[`${rowIndex}-${colIndex}`] = '';
+          }
+        });
+      });
       setCellInputs(inputs);
       
-      // Set clues for the clues panel
-      if (data.clues) {
-        setCrosswordClues(data.clues);
-      } else if (data.acrossClues && data.downClues) {
-        setCrosswordClues([...data.acrossClues, ...data.downClues]);
-      }
+      // Set clues
+      const allClues = [...acrossClues, ...downClues];
+      setCrosswordClues(allClues);
+      console.log('✅ Crossword grid initialized with', allClues.length, 'clues');
+      
+      // ✅ Mark game as active
+      setGameStatus(prev => ({ ...prev, isGameActive: true }));
     };
 
     const onWordLocked = (data) => {
@@ -1130,20 +1264,23 @@ const GameUI = ({ user, onLogout }) => {
     newSocket.on('disconnect', onDisconnect);
     newSocket.on('reconnect', onReconnect);
     
-    // Register all game events (not conditional)
+    // Register all game events
     newSocket.on('gameStatus', onGameStatus);
     newSocket.on('gameStarted', onGameStarted);
     newSocket.on('newQuestion', onNewQuestion);
     newSocket.on('answerResult', onAnswerResult);
     newSocket.on('questionClosed', onQuestionClosed);
     newSocket.on('gameCompleted', onGameCompleted);
-    newSocket.on('gameEnded', onGameEnded); // ✅ ADD: Listen for game end when all players leave
+    newSocket.on('gameEnded', onGameEnded);
     newSocket.on('leaderboardUpdate', onLeaderboardUpdate);
+    newSocket.on('crosswordLeaderboardUpdate', onCrosswordLeaderboardUpdate);
     
     // Crossword events
     newSocket.on('crosswordGrid', onCrosswordGrid);
+    newSocket.on('playerListUpdate', onPlayerListUpdate);
     newSocket.on('wordLocked', onWordLocked);
     newSocket.on('wordSolved', onWordSolved);
+    newSocket.on('gameWinner', onGameWinner);  // ✅ NEW: Listen for game winner
     newSocket.on('crosswordWinner', onCrosswordWinner);
     newSocket.on('spectatorsUpdate', onSpectatorsUpdate);
 
@@ -1178,20 +1315,6 @@ const GameUI = ({ user, onLogout }) => {
         }
       }
 
-      // ✅ CLEANUP: Emit leave game event to inform server
-      if (newSocket && newSocket.connected) {
-        try {
-          newSocket.emit('leaveGame', {
-            game_code: gameCode || null,
-            user_id: user?.user_id || user?.uid || null,
-            email: user?.email || null
-          });
-          console.log('👋 Leaving game:', gameCode);
-        } catch (err) {
-          console.error('Error emitting leaveGame:', err);
-        }
-      }
-
       // ✅ CLEANUP: Remove all listeners
       if (newSocket) {
         newSocket.off('connect', onConnect);
@@ -1204,11 +1327,14 @@ const GameUI = ({ user, onLogout }) => {
         newSocket.off('answerResult', onAnswerResult);
         newSocket.off('questionClosed', onQuestionClosed);
         newSocket.off('gameCompleted', onGameCompleted);
-        newSocket.off('gameEnded', onGameEnded); // ✅ REMOVE: Remove gameEnded listener
+        newSocket.off('gameEnded', onGameEnded);
         newSocket.off('leaderboardUpdate', onLeaderboardUpdate);
+        newSocket.off('leaderboardUpdate', onCrosswordLeaderboardUpdate);
         newSocket.off('crosswordGrid', onCrosswordGrid);
+        newSocket.off('playerListUpdate', onPlayerListUpdate);
         newSocket.off('wordLocked', onWordLocked);
         newSocket.off('wordSolved', onWordSolved);
+        newSocket.off('gameWinner', onGameWinner);  // ✅ NEW: Remove gameWinner listener
         newSocket.off('crosswordWinner', onCrosswordWinner);
         newSocket.off('spectatorsUpdate', onSpectatorsUpdate);
 
@@ -1308,15 +1434,94 @@ const GameUI = ({ user, onLogout }) => {
     }
   };
 
-  const fetchCrosswordLeaderboard = async () => {
+  const fetchCrosswordLeaderboard = async (sessionId = null) => {
     try {
-      const res = await fetch(`${API_BASE}/crossword/leaderboard`);
+      // Use session ID if provided, otherwise try to get from gameStatus
+      const sessionToUse = sessionId || gameStatus.gameSessionId;
+      if (!sessionToUse) {
+        console.warn('⚠️ No session ID available for fetching crossword leaderboard');
+        return;
+      }
+      
+      const res = await fetch(`${API_BASE}/crossword/live-leaderboard/${sessionToUse}`);
       const data = await res.json();
-      if (mountedRef.current) setLeaderboard(Array.isArray(data) ? data : []);
+      
+      if (mountedRef.current) {
+        console.log('📊 Crossword leaderboard fetched:', data);
+        setLeaderboard(data?.leaderboard && Array.isArray(data.leaderboard) ? data.leaderboard : []);
+      }
     } catch (err) {
       console.error('Error fetching crossword leaderboard:', err);
     }
   };
+
+  // ✅ NEW: Game timer countdown effect
+  useEffect(() => {
+    if (gameType !== "A. Crossword" || !gameTimer.gameActive) return;
+
+    const timerInterval = setInterval(() => {
+      setGameTimer(prev => {
+        const now = Date.now();
+        const timeRemaining = Math.max(0, prev.endTime - now);
+        const timeRemainingSeconds = Math.ceil(timeRemaining / 1000);
+        const gameExpired = timeRemaining === 0;
+
+        if (gameExpired && !prev.gameExpired) {
+          console.log('⏰ Game timer expired!');
+        }
+
+        return {
+          ...prev,
+          timeRemaining,
+          timeRemainingSeconds,
+          gameExpired,
+          gameActive: timeRemaining > 0
+        };
+      });
+    }, 500); // Update every 500ms for smoother countdown
+
+    return () => clearInterval(timerInterval);
+  }, [gameType, gameTimer.gameActive, gameTimer.endTime]);
+
+  // ✅ NEW: Fetch game timer and winner status periodically
+  useEffect(() => {
+    if (gameType !== "A. Crossword" || !gameCode) return;
+
+    const timerPollInterval = setInterval(async () => {
+      try {
+        // Fetch game timer status
+        const timerRes = await fetch(`${CROSSWORD_SOCKET_BASE}/crossword/game-timer/${gameCode}`);
+        const timerData = await timerRes.json();
+
+        if (mountedRef.current && timerData.success) {
+          setGameTimer(prev => ({
+            ...prev,
+            gameActive: timerData.gameActive,
+            timeRemaining: timerData.timeRemaining,
+            timeRemainingSeconds: timerData.timeRemainingSeconds,
+            startTime: timerData.startTime,
+            endTime: timerData.endTime,
+            totalWords: timerData.totalWords,
+            gameExpired: timerData.gameExpired
+          }));
+        }
+
+        // Fetch game winner status
+        const winnerRes = await fetch(`${CROSSWORD_SOCKET_BASE}/crossword/game-winner/${gameCode}`);
+        const winnerData = await winnerRes.json();
+
+        if (mountedRef.current && winnerData.success && winnerData.winner && !gameWinner) {
+          setGameWinner(winnerData.winner);
+          setHasGameEnded(true);
+          console.log(`🏆 Winner found: ${winnerData.winner.playerName}`);
+        }
+      } catch (err) {
+        console.error('Error polling game timer/winner:', err);
+      }
+    }, 1000); // Poll every second
+
+    return () => clearInterval(timerPollInterval);
+  }, [gameType, gameCode, gameWinner]);
 
   const handleAnswer = (answerKey) => {
     if (!socketRef.current || !user || !currentQuestion || isAnswerSubmitted) {
@@ -1346,6 +1551,98 @@ const GameUI = ({ user, onLogout }) => {
 
     console.log('✅ Player submitted answer:', payload);
     socketRef.current.emit('submitAnswer', payload);
+  };
+
+  const submitCrosswordAnswer = async (questionId, userAnswer) => {
+    if (!user || !gameCode) {
+      console.error('Cannot submit crossword answer - missing user or game code');
+      return;
+    }
+
+    try {
+      const sessionId = gameStatus.gameSessionId;
+      if (!sessionId) {
+        console.warn('⚠️ No game session ID for crossword answer submission');
+        // Try fetching leaderboard anyway
+        fetchCrosswordLeaderboard();
+        return;
+      }
+
+      const payload = {
+        user_id: user.user_id || user.uid,
+        game_session_id: sessionId,
+        game_code: gameCode,
+        crossword_question_id: questionId,
+        user_answer: userAnswer
+      };
+
+      console.log('📝 Submitting crossword answer:', payload);
+      const res = await fetch(`${API_BASE}/crossword/record-answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await res.json();
+
+      if (result.ok) {
+        console.log('✅ Crossword answer recorded:', result);
+        
+        // Update leaderboard from response
+        if (result.leaderboard && Array.isArray(result.leaderboard)) {
+          console.log('📊 Updated leaderboard with', result.leaderboard.length, 'players');
+          setLeaderboard(result.leaderboard);
+        }
+        
+        // Update player stats
+        if (result.points_earned && result.points_earned > 0) {
+          setResult({
+            message: `✅ Correct! +${result.points_earned} points`,
+            correct: true,
+            points: result.points_earned,
+            correctAnswer: userAnswer,
+            correctAnswerKey: null,
+            showNextButton: false
+          });
+
+          setGameStats((prev) => ({
+            ...prev,
+            score: prev.score + result.points_earned,
+            correct: prev.correct + 1,
+            questionsAnswered: prev.questionsAnswered + 1
+          }));
+        } else {
+          setResult({
+            message: '❌ Incorrect answer',
+            correct: false,
+            points: 0,
+            correctAnswer: result.correctAnswer || '',
+            correctAnswerKey: null,
+            showNextButton: false
+          });
+        }
+      } else {
+        console.warn('❌ Crossword answer rejected:', result.error);
+        setResult({
+          message: result.error || 'Answer rejected',
+          correct: false,
+          points: 0,
+          correctAnswer: '',
+          correctAnswerKey: null,
+          showNextButton: false
+        });
+      }
+    } catch (err) {
+      console.error('Error submitting crossword answer:', err);
+      setResult({
+        message: 'Error submitting answer',
+        correct: false,
+        points: 0,
+        correctAnswer: '',
+        correctAnswerKey: null,
+        showNextButton: false
+      });
+    }
   };
 
   const lockWord = (wordId, direction) => {
@@ -1428,16 +1725,45 @@ const GameUI = ({ user, onLogout }) => {
       // Check if word is complete and correct
       if (wordValue.length === length && 
           wordValue.toUpperCase() === (answer || '').toUpperCase()) {
+        console.log(`✅ Word completed: ${clue.question || clue.clue} = ${wordValue}`);
         newCompletedWords.push(clueId);
+        
+        // Submit the answer to backend
+        if (!completedWords.includes(clueId)) {
+          submitCrosswordAnswer(clue.id || clueId, wordValue);
+        }
       }
     });
 
-    setCompletedWords(newCompletedWords);
+    // Update completed words if changed
+    if (newCompletedWords.length !== completedWords.length) {
+      setCompletedWords(newCompletedWords);
+      console.log('🔄 Updated completed words:', newCompletedWords);
+    }
   };
 
   const handleCellInput = (rowIndex, colIndex, value) => {
     const cellId = `${rowIndex}-${colIndex}`;
+    
+    // ✅ CHECK: Is this cell part of a completed word? If so, don't allow changes
+    const clues = crosswordClues.length > 0 ? crosswordClues : (crosswordData.clues || []);
+    for (const clue of clues) {
+      if (completedWords.includes(clue.id || clue.clueId || clue.number)) {
+        const isCellInCompletedWord = isCellInWord(clue.id || clue.clueId || clue.number, rowIndex, colIndex, clues);
+        if (isCellInCompletedWord) {
+          console.log('🔒 Cell is in completed word - preventing changes');
+          return; // Don't allow changes to completed word cells
+        }
+      }
+    }
+    
     const upperValue = value.toUpperCase();
+    
+    // ✅ Only allow single letter input
+    if (upperValue.length > 1) return;
+    
+    // ✅ Only allow letters (A-Z)
+    if (upperValue && !/^[A-Z]$/.test(upperValue)) return;
     
     const updatedInputs = {
       ...cellInputs,
@@ -1461,7 +1787,21 @@ const GameUI = ({ user, onLogout }) => {
   };
 
   const handleKeyDown = (e, rowIndex, colIndex) => {
-    if (e.key === 'Backspace' && !cellInputs[`${rowIndex}-${colIndex}`]) {
+    const cellId = `${rowIndex}-${colIndex}`;
+    
+    // ✅ CHECK: Is this cell part of a completed word? If so, prevent editing
+    const clues = crosswordClues.length > 0 ? crosswordClues : (crosswordData.clues || []);
+    const isInCompletedWord = completedWords.some(completedWordId => 
+      isCellInWord(completedWordId, rowIndex, colIndex, clues)
+    );
+    
+    if (isInCompletedWord && e.key === 'Backspace') {
+      e.preventDefault();
+      console.log('🔒 Cannot edit completed word');
+      return;
+    }
+    
+    if (e.key === 'Backspace' && !cellInputs[cellId]) {
       // Move to previous cell on backspace when current is empty
       const prevInput = document.querySelector(`[data-row="${rowIndex}"][data-col="${colIndex - 1}"]`);
       if (prevInput) {
@@ -1588,7 +1928,10 @@ const GameUI = ({ user, onLogout }) => {
       });
       
       if (gameType === "A. Crossword") {
-        fetchCrosswordLeaderboard();
+        // ✅ Fetch initial leaderboard after a short delay
+        setTimeout(() => {
+          fetchCrosswordLeaderboard();
+        }, 300);
       } else {
         fetchLeaderboard();
       }
@@ -1642,15 +1985,13 @@ const GameUI = ({ user, onLogout }) => {
       );
     }
     
-    const { grid, cellNumbers } = crosswordData;
+    const { grid, cellNumbers, acrossClues: storedAcrossClues, downClues: storedDownClues } = crosswordData;
     const rows = grid.length;
     const cols = grid[0] ? grid[0].length : 0;
     
-    // Get clues from the correct place
-    const clues = crosswordClues.length > 0 ? crosswordClues : 
-                  (crosswordData.clues || []);
-    const acrossClues = clues.filter(clue => clue.direction === 'across' || clue.direction === 'horizontal');
-    const downClues = clues.filter(clue => clue.direction === 'down' || clue.direction === 'vertical');
+    // ✅ FIXED: Use properly separated clues from state (already split by direction in onCrosswordGrid)
+    const acrossClues = storedAcrossClues || [];
+    const downClues = storedDownClues || [];
     
     return (
       <div className="flex flex-col gap-6 w-full">
@@ -1679,8 +2020,11 @@ const GameUI = ({ user, onLogout }) => {
                   const cellNumber = cellNumbers && cellNumbers[cellId];
                   const letter = getCellLetter(rowIndex, colIndex);
                   
+                  // ✅ FIXED: Use combined acrossClues and downClues instead of undefined clues variable
+                  const allClues = [...acrossClues, ...downClues];
+                  
                   // Check if this cell is part of a completed word
-                  const cellIsCompleted = clues.some(clue => {
+                  const cellIsCompleted = allClues.some(clue => {
                     const clueId = clue.id || clue.clueId || clue.number;
                     if (!completedWords.includes(clueId)) return false;
                     
@@ -1718,13 +2062,15 @@ const GameUI = ({ user, onLogout }) => {
                           onKeyDown={(e) => handleKeyDown(e, rowIndex, colIndex)}
                           data-row={rowIndex}
                           data-col={colIndex}
+                          disabled={cellIsCompleted}
                           className={`w-full h-full text-center uppercase font-bold text-xl ${
                             cellIsCompleted 
-                              ? "bg-green-700 text-white focus:bg-green-600 focus:ring-2 focus:ring-green-500" 
+                              ? "bg-green-700 text-white cursor-not-allowed opacity-75" 
                               : "bg-white text-black focus:bg-blue-50 focus:ring-2 focus:ring-blue-400"
                           }`}
                           maxLength={1}
                           style={{ fontSize: '1.25rem' }}
+                          title={cellIsCompleted ? "Word is completed - cannot edit" : "Enter a letter"}
                         />
                       ) : null}
                     </div>
@@ -1827,6 +2173,91 @@ const GameUI = ({ user, onLogout }) => {
               )}
             </div>
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCrosswordLeaderboard = () => {
+    if (gameType !== "A. Crossword" || !leaderboard || leaderboard.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="w-full h-fit">
+        <div className="bg-gray-800 rounded-xl p-4 border-2 border-cyan-600">
+          <h3 className="text-lg font-bold text-cyan-400 mb-4 flex items-center">
+            🏆 Live Leaderboard
+          </h3>
+          
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {leaderboard.map((player, index) => {
+              const isCurrentUser = user && player.user_id === (user.user_id || user.uid);
+              
+              return (
+                <div
+                  key={`${player.user_id}-${index}`}
+                  className={`p-3 rounded-lg transition-all ${
+                    isCurrentUser
+                      ? 'bg-cyan-700 border-2 border-cyan-400 scale-105'
+                      : index === 0
+                      ? 'bg-yellow-700 border border-yellow-600'
+                      : index === 1
+                      ? 'bg-gray-600 border border-gray-500'
+                      : index === 2
+                      ? 'bg-amber-700 border border-amber-600'
+                      : 'bg-gray-700 border border-gray-600'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center flex-1">
+                      <span className={`font-bold mr-3 w-8 text-center ${
+                        index === 0 ? 'text-yellow-300' : index === 1 ? 'text-gray-300' : index === 2 ? 'text-amber-300' : 'text-cyan-300'
+                      }`}>
+                        {index + 1}
+                        {index === 0 && ' 🥇'}
+                        {index === 1 && ' 🥈'}
+                        {index === 2 && ' 🥉'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className={`font-semibold truncate ${
+                          isCurrentUser ? 'text-cyan-100' : 'text-white'
+                        }`}>
+                          {player.display_name || `Player ${player.user_id}`}
+                        </div>
+                        {isCurrentUser && (
+                          <div className="text-cyan-200 text-xs">You</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-2 flex justify-between text-sm">
+                    <div className="text-gray-200">
+                      <span className="text-xs text-gray-400">Score: </span>
+                      <span className="font-bold text-cyan-300">{player.current_score || 0}</span>
+                    </div>
+                    <div className="text-gray-200">
+                      <span className="text-xs text-gray-400">Solved: </span>
+                      <span className="font-bold text-green-300">{player.correct_answers || 0}</span>
+                    </div>
+                  </div>
+                  
+                  {player.accuracy !== undefined && (
+                    <div className="mt-1 text-xs text-gray-400">
+                      Accuracy: <span className="text-cyan-300 font-semibold">{Math.round(player.accuracy || 0)}%</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          
+          {leaderboard.length === 0 && (
+            <div className="text-center text-gray-400 py-4">
+              Waiting for players...
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2156,6 +2587,167 @@ const GameUI = ({ user, onLogout }) => {
     );
   }
 
+  // ✅ CROSSWORD SPECIFIC: Show waiting screen with leaderboard like MCQ version
+  if (gameType === "A. Crossword" && !gameStatus.isGameActive && !gameCompleted) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-cyan-900 to-gray-900 p-4">
+        <div className="max-w-6xl mx-auto">
+          {/* Header */}
+          <div className="flex flex-col lg:flex-row justify-between items-center mb-8 p-6 bg-gray-800 rounded-2xl border-2 border-cyan-600">
+            <div className="text-center lg:text-left mb-4 lg:mb-0">
+              <h1 className="text-4xl font-bold text-cyan-400 mb-2">
+                🧩 Crossword Game
+              </h1>
+              <p className="text-cyan-200">Collaborative Crossword Puzzle</p>
+              {gameCode && (
+                <div className="mt-2 text-cyan-300">
+                  Game Code: <span className="font-mono font-bold">{gameCode}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-4 items-center">
+              {user && (
+                <div className="text-center sm:text-right">
+                  <p className="text-cyan-100 font-semibold">
+                    {user.display_name || user.displayName}
+                  </p>
+                  <p className="text-cyan-200 text-sm">{user.email}</p>
+                </div>
+              )}
+              <button
+                onClick={handleExitToDashboard}
+                className="px-6 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold transition-colors"
+              >
+                🚪 Exit Game
+              </button>
+            </div>
+          </div>
+
+          {/* Main Content: Waiting Message + Leaderboard */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* LEFT: Waiting Message */}
+            <div className="lg:col-span-2">
+              <div className="bg-gray-800 rounded-2xl p-8 border-2 border-cyan-600 h-full flex flex-col items-center justify-center min-h-96">
+                <div className="text-6xl mb-6 animate-pulse">⏳</div>
+                <h2 className="text-3xl font-bold text-cyan-400 mb-4 text-center">
+                  Waiting for Crossword Game to Start
+                </h2>
+                <p className="text-cyan-200 text-lg text-center mb-6">
+                  Your teacher hasn't started the game yet. Please wait...
+                </p>
+                <p className="text-cyan-300 text-center">
+                  {leaderboard && leaderboard.length > 0 
+                    ? `${leaderboard.length} player(s) ready`
+                    : 'Waiting for players to join...'}
+                </p>
+                <p className={`text-sm mt-4 font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>
+                  {connected ? '🟢 Connected to server' : '🔴 Disconnected'}
+                </p>
+              </div>
+            </div>
+
+            {/* RIGHT: Leaderboard + Stats */}
+            <div className="lg:col-span-1 flex flex-col gap-6">
+              {/* Live Leaderboard */}
+              <div className="bg-gray-800 rounded-2xl p-4 border-2 border-cyan-600">
+                <h3 className="text-xl font-bold text-cyan-400 mb-4 flex items-center">
+                  👥 Live Leaderboard
+                </h3>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {leaderboard && leaderboard.length > 0 ? (
+                    leaderboard.map((player, index) => {
+                      const isCurrentUser = user && (player.email === user.email || player.user_id === user.user_id);
+                      return (
+                        <div
+                          key={player.user_id}
+                          className={`p-2 rounded-lg text-sm ${
+                            index === 0
+                              ? 'bg-yellow-700 border border-yellow-600'
+                              : index === 1
+                              ? 'bg-gray-600 border border-gray-500'
+                              : index === 2
+                              ? 'bg-amber-700 border border-amber-600'
+                              : 'bg-gray-700 border border-gray-600'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`font-bold ${
+                              index === 0 ? 'text-yellow-300' : index === 1 ? 'text-gray-300' : index === 2 ? 'text-amber-300' : 'text-cyan-300'
+                            }`}>
+                              {index + 1}
+                              {index === 0 && ' 🥇'}
+                              {index === 1 && ' 🥈'}
+                              {index === 2 && ' 🥉'}
+                            </span>
+                            <span className={`font-semibold ${isCurrentUser ? 'text-cyan-100' : 'text-white'}`}>
+                              {player.display_name ? player.display_name.substring(0, 12) : 'Player'}
+                            </span>
+                            <span className="text-cyan-300 font-bold">{player.current_score || 0}</span>
+                          </div>
+                          {isCurrentUser && (
+                            <div className="text-cyan-200 text-xs mt-1">You</div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-center text-gray-400 py-4 text-sm">
+                      No scores yet
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Your Stats - Crossword Specific */}
+              <div className="bg-gray-800 rounded-2xl p-4 border-2 border-cyan-600">
+                <h3 className="text-xl font-bold text-cyan-400 mb-4">📊 Your Stats</h3>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-cyan-300">{gameStats.score || 0}</div>
+                    <div className="text-xs text-gray-400 mt-1">Points</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-300">{gameStats.correct || 0}</div>
+                    <div className="text-xs text-gray-400 mt-1">Cells Filled</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-blue-300">
+                      {gameStats.total > 0 ? Math.round(((gameStats.correct || 0) / (gameStats.total || 1)) * 100) : 0}%
+                    </div>
+                    <div className="text-xs text-gray-400 mt-1">Accuracy</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Game Status */}
+              <div className="bg-gray-800 rounded-2xl p-4 border-2 border-cyan-600">
+                <h3 className="text-xl font-bold text-cyan-400 mb-4">⚙️ Game Status</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Status:</span>
+                    <span className={` font-bold ${connected ? 'text-yellow-400' : 'text-red-400'}`}>
+                      {gameStatus.waitingForFreshStart ? '🔄 Rejoining' : '⏳ Waiting'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Players:</span>
+                    <span className="text-cyan-300 font-bold">{leaderboard ? leaderboard.length : 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Connection:</span>
+                    <span className={`font-bold ${connected ? 'text-green-400' : 'text-red-400'}`}>
+                      {connected ? '🟢 Connected' : '🔴 Disconnected'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-cyan-900 to-gray-900 p-4">
       {renderWinnerAnimation()}
@@ -2232,7 +2824,11 @@ const GameUI = ({ user, onLogout }) => {
                     </p>
                   </div>
                   
-                  {renderCrosswordGrid()}
+                  {gameStatus.isGameActive && (
+                    <div className="w-full">
+                      {renderCrosswordGrid()}
+                    </div>
+                  )}
                   
                   {result.message && (
                     <div
@@ -2267,11 +2863,39 @@ const GameUI = ({ user, onLogout }) => {
           </div>
 
           <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-6 border-2 border-cyan-500 h-fit shadow-lg">
-            <div className="flex items-center justify-center mb-6">
-              <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 via-cyan-400 to-blue-400 bg-clip-text text-transparent">
-                🏆 Live Leaderboard
-              </h2>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex-1">
+                <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 via-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                  🏆 Live Leaderboard
+                </h2>
+              </div>
+              
+              {/* ✅ NEW: Game Timer Display for Crossword */}
+              {gameType === "A. Crossword" && (
+                <div className={`ml-4 px-4 py-2 rounded-lg font-bold text-lg ${
+                  gameTimer.gameExpired 
+                    ? 'bg-red-600 text-white'
+                    : gameTimer.timeRemainingSeconds <= 60 
+                    ? 'bg-orange-600 text-white'
+                    : 'bg-green-600 text-white'
+                }`}>
+                  ⏱️ {Math.floor(gameTimer.timeRemainingSeconds / 60)}:{String(gameTimer.timeRemainingSeconds % 60).padStart(2, '0')}
+                </div>
+              )}
             </div>
+
+            {/* ✅ NEW: Game winner announcement */}
+            {gameWinner && (
+              <div className="mb-4 p-4 bg-gradient-to-r from-yellow-500 via-yellow-400 to-orange-500 rounded-xl border-2 border-yellow-300 text-center">
+                <div className="text-2xl font-bold text-white">🏆 WINNER!</div>
+                <div className="text-lg font-semibold text-white mt-1">
+                  {gameWinner.playerName}
+                </div>
+                <div className="text-sm text-yellow-900 mt-1">
+                  Completed all {gameWinner.totalWords} words first!
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2.5 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-cyan-600 scrollbar-track-gray-700">
               {leaderboard.length > 0 ? (
@@ -2328,19 +2952,35 @@ const GameUI = ({ user, onLogout }) => {
                                   : 'text-gray-100'
                               }`}
                             >
-                              {player.display_name || player.email}
+                              {/* ✅ IMPROVED: Better display_name fallback hierarchy + winner badge */}
+                              {
+                                player.display_name 
+                                  ? player.display_name 
+                                  : player.email?.split('@')[0] || player.name || `Player ${player.user_id}` || `Player ${index + 1}`
+                              }
+                              {gameWinner && player.user_id === gameWinner.user_id && (
+                                <span className="ml-2 text-lg">👑</span>
+                              )}
                             </div>
-                            {isCurrentUser && (
-                              <div
-                                className={`text-xs font-semibold ${
-                                  index < 3
-                                    ? 'text-gray-100'
-                                    : 'text-cyan-300'
-                                }`}
-                              >
-                                ★ You
-                              </div>
-                            )}
+                            <div className="flex gap-2 items-center mt-1">
+                              {isCurrentUser && (
+                                <div
+                                  className={`text-xs font-semibold ${
+                                    index < 3
+                                      ? 'text-gray-100'
+                                      : 'text-cyan-300'
+                                  }`}
+                                >
+                                  ★ You
+                                </div>
+                              )}
+                              {/* ✅ NEW: Show completion status for crossword */}
+                              {gameType === "A. Crossword" && player.attempts > 0 && (
+                                <div className="text-xs bg-blue-600/50 text-blue-100 px-2 py-0.5 rounded">
+                                  {player.correct_answers}/{player.attempts}
+                                </div>
+                              )}
+                            </div>
 
                           </div>
                         </div>

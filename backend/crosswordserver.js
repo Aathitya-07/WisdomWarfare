@@ -8,7 +8,9 @@ const multer = require("multer");
 const csv = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
-const { generateCrosswordGrid } = require("./crosswordGrid");
+const fetch = require("node-fetch");
+const nodemailer = require("nodemailer");
+const { generateCrosswordGrid, fetchCrosswordQuestions } = require("./crosswordGrid");
 
 const app = express();
 
@@ -55,9 +57,12 @@ const pool = mysql.createPool({
 // ----- GLOBAL CROSSWORD STATE -----
 // ==========================================
 
-const crosswordSessions = new Map(); // sessionId -> { grid, clues, solvedWords, solvedUsers, gameCode, startTime }
-const crosswordGameStatus = new Map(); // game_code -> { started: false, sessionId: null }
+const crosswordSessions = new Map(); // sessionId -> { grid, clues, solvedWords, solvedUsers, gameCode, startTime, gameEndTime, totalWords, winners }
+const crosswordGameStatus = new Map(); // game_code -> { started: false, sessionId: null, gameSessionId: null }
 const crosswordLocks = new Map(); // sessionId -> Map(user_id -> crossword_question_id)
+const leaderboardTimers = new Map(); // game_code -> timeout ID for debounced broadcasts
+const gameSessions = new Map(); // game_code -> { gameSessionId, startTime, gameEndTime, players, gameState, totalWords, winners }
+const gameTimers = new Map(); // game_code -> { timeRemaining, timerInterval }
 
 // ==========================================
 // ----- HELPERS -----
@@ -103,6 +108,50 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+// ✅ Live Leaderboard Helper Functions (from Wisdom Warfare pattern)
+
+function scheduleCrosswordLeaderboardBroadcast(game_code, gameSessionId) {
+  if (!game_code || !gameSessionId) return;
+  
+  // If timer already running for this game, don't schedule another
+  if (leaderboardTimers.has(game_code)) return;
+  
+  // Schedule broadcast after 500ms debounce window
+  leaderboardTimers.set(game_code, setTimeout(async () => {
+    leaderboardTimers.delete(game_code);
+    
+    try {
+      const [leaderboard] = await pool.query(
+        `SELECT 
+          ll.user_id,
+          ll.current_score as score,
+          ll.accuracy,
+          ll.correct_answers,
+          ll.questions_answered as attempts,
+          COALESCE(u.display_name, u.name, u.email, CONCAT('Player_', ll.user_id)) as display_name,
+          u.email,
+          u.name
+        FROM live_leaderboard ll
+        LEFT JOIN users u ON ll.user_id = u.user_id
+        WHERE ll.game_session_id = ?
+        ORDER BY ll.current_score DESC, ll.accuracy DESC
+        LIMIT 10`,
+        [gameSessionId]
+      );
+      
+      // ✅ Emit to crosswordLeaderboardUpdate event for proper frontend handling
+      const roomName = `game_${game_code}`;
+      io.to(roomName).emit("crosswordLeaderboardUpdate", leaderboard);
+      console.log(`📊 Broadcast crossword leaderboard to ${roomName}: ${leaderboard.length} players`);
+      
+      // Also emit to general leaderboardUpdate for backward compatibility
+      io.to(roomName).emit("leaderboardUpdate", leaderboard);
+    } catch (err) {
+      console.error("⚠️ Error fetching leaderboard:", err.message);
+    }
+  }, 500));
+}
+
 // ==========================================
 // ----- CROSSWORD API ROUTES -----
 // ==========================================
@@ -138,6 +187,74 @@ app.get("/crossword/questions", async (req, res) => {
     res.status(500).json({
       success: false,
       questions: [],
+    });
+  }
+});
+
+// Seed crossword questions if table is empty
+app.post("/crossword/seed-questions", async (req, res) => {
+  try {
+    // Check if questions already exist
+    const [existing] = await pool.query(`SELECT COUNT(*) as count FROM crossword_questions`);
+    if (existing[0].count > 0) {
+      return res.json({
+        success: true,
+        message: "Crossword questions already seeded",
+        count: existing[0].count
+      });
+    }
+
+    // Sample crossword questions for seeding
+    const sampleQuestions = [
+      { question: "A sequence of characters with a collective meaning", answer: "TOKEN", difficulty: "Easy" },
+      { question: "Data structure used to store information about identifiers", answer: "SYMBOLTABLE", difficulty: "Medium" },
+      { question: "Phase that checks for grammatical errors", answer: "SYNTAX", difficulty: "Easy" },
+      { question: "Tree representation of the abstract syntactic structure", answer: "AST", difficulty: "Medium" },
+      { question: "A grammar that produces more than one parse tree for a string", answer: "AMBIGUOUS", difficulty: "Medium" },
+      { question: "Process of improving code efficiency without changing output", answer: "OPTIMIZATION", difficulty: "Medium" },
+      { question: "Bottom-up parsing is also called ____-reduce parsing", answer: "SHIFT", difficulty: "Hard" },
+      { question: "Tool used to generate lexical analyzers", answer: "LEX", difficulty: "Medium" },
+      { question: "Tool used to generate parsers", answer: "YACC", difficulty: "Medium" },
+      { question: "Type checking occurs during this analysis phase", answer: "SEMANTIC", difficulty: "Easy" },
+      { question: "Intermediate code often uses _____ address code", answer: "THREE", difficulty: "Hard" },
+      { question: "Converts assembly language to machine code", answer: "ASSEMBLER", difficulty: "Easy" },
+      { question: "Removing code that is never executed", answer: "DEADCODE", difficulty: "Medium" },
+      { question: "Top-down parser that backtracks when a production fails", answer: "TOPDOWN", difficulty: "Hard" },
+      { question: "Parser that processes input from bottom to top", answer: "BOTTOMUP", difficulty: "Hard" },
+      { question: "LR parser that uses lookahead", answer: "LRPARSING", difficulty: "Hard" },
+      { question: "Analyzing source code to find issues before runtime", answer: "LEXICAL", difficulty: "Medium" },
+      { question: "When two signals interact constructively or destructively", answer: "INTERFERENCE", difficulty: "Medium" },
+      { question: "Grammar type without recursion restrictions", answer: "CONTEXTFREE", difficulty: "Hard" },
+      { question: "When parse is possible from right to left", answer: "REDUCERDUCE", difficulty: "Hard" },
+      { question: "Study of how symbols relate to objects", answer: "SEMANTIC", difficulty: "Medium" },
+      { question: "Expression that doesn't change like integer or string", answer: "INVARIANT", difficulty: "Hard" },
+      { question: "Intermediate representation with 3 operands", answer: "THREEADDRESS", difficulty: "Hard" }
+    ];
+
+    // Insert all questions
+    let inserCount = 0;
+    for (const q of sampleQuestions) {
+      try {
+        await pool.query(
+          `INSERT INTO crossword_questions (question, answer, difficulty) VALUES (?, ?, ?)`,
+          [q.question, q.answer, q.difficulty]
+        );
+        inserCount++;
+      } catch (e) {
+        console.warn(`Failed to insert "${q.answer}":`, e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Seeded ${inserCount} crossword questions`,
+      count: inserCount
+    });
+  } catch (err) {
+    console.error("POST /crossword/seed-questions error:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 });
@@ -345,6 +462,9 @@ app.post("/crossword/start-game", async (req, res) => {
   }
 
   try {
+    console.log(`🚀 START-GAME ENDPOINT: Teacher starting crossword game: ${game_code}`);
+
+    // Verify game exists
     const [[game]] = await pool.query(
       "SELECT * FROM teacher_games WHERE game_code = ?",
       [game_code]
@@ -354,40 +474,183 @@ app.post("/crossword/start-game", async (req, res) => {
       return res.status(404).json({ error: "Invalid crossword code" });
     }
 
-    const [questions] = await pool.query(
-      "SELECT id, question, answer FROM crossword_questions"
-    );
-
-    if (questions.length === 0) {
-      return res.status(400).json({ error: "No crossword questions" });
+    const roomName = `game_${game_code}`;
+    let session = gameSessions.get(game_code);
+    
+    // If no session exists (no players joined yet), create one
+    if (!session) {
+      const gameSessionId = generateCrosswordSessionId();
+      session = {
+        gameSessionId,
+        game_type: "Crossword",
+        game_name: game.game_name || "Crossword Game",
+        state: "WAITING_FOR_TEACHER",
+        started: false,
+        players: new Map(),
+        startTime: null,
+        grid: null,
+        clues: null
+      };
+      gameSessions.set(game_code, session);
+      console.log(`✅ Created new session for game: ${game_code}, ID: ${gameSessionId}`);
     }
 
-    const crossword = generateCrosswordGrid(questions);
-    const sessionId = `CW_${Date.now()}_${game_code}`;
+    // ✅ Fetch ALL questions dynamically with random selection
+    const questions = await fetchCrosswordQuestions(20);
 
-    crosswordSessions.set(sessionId, {
+    if (!questions || questions.length === 0) {
+      return res.status(400).json({ error: "No crossword questions available" });
+    }
+
+    // ✅ Generate crossword grid (creates DIFFERENT grid each time)
+    const crossword = generateCrosswordGrid(questions);
+
+    // DEBUG: Verify grid quality
+    if (crossword.grid && crossword.grid.length > 0) {
+      console.log(`🎯 GRID QUALITY:`);
+      console.log(`   Density: ${crossword.density}%`);
+      console.log(`   White Cells: ${crossword.whiteCells}, Black Cells: ${crossword.blackCells}`);
+      console.log(`   First row: [${crossword.grid[0].slice(0, 5).map(c => `"${c}"`).join(', ')}]`);
+    }
+
+    // ✅ Update session
+    session.state = "ACTIVE";
+    session.started = true;
+    session.startTime = Date.now();
+    session.gameEndTime = session.startTime + (5 * 60 * 1000); // 5 minute game limit
+    session.grid = crossword.grid;
+    session.clues = crossword.clues;
+    session.totalWords = crossword.placedWords ? crossword.placedWords.length : 0;
+    session.winners = []; // Track winners in order
+
+    // Store for reference
+    const sessionData = {
       grid: crossword.grid,
       clues: crossword.clues,
+      letters: crossword.letters,
       solvedWords: new Set(),
       solvedUsers: new Map(),
       gameCode: game_code,
-      startTime: Date.now()
-    });
+      gameSessionId: session.gameSessionId,
+      startTime: session.startTime,
+      gameEndTime: session.gameEndTime,
+      placedWords: crossword.placedWords,
+      totalWords: session.totalWords,
+      winners: [], // Track first completions: [{ user_id, time, score }]
+      playerCompletionTime: new Map() // Track when each player completed all words
+    };
+    crosswordSessions.set(session.gameSessionId, sessionData);
 
-    crosswordGameStatus.set(game_code, {
-      started: true,
-      sessionId
-    });
+    console.log(`✅ Crossword grid generated with ${questions.length} questions`);
+    console.log(`⏱️ Game duration: 5 minutes (until ${new Date(session.gameEndTime).toISOString()})`);
+    console.log(`📋 Total words to complete: ${session.totalWords}`);
 
-    io.to(game_code).emit("crosswordGrid", {
+    // ✅ Broadcast gameStarted event to all players in the room
+    io.to(roomName).emit("gameStarted", {
+      game_code,
+      gameSessionId: session.gameSessionId,
+      message: "Crossword game is starting now!",
+      gameStartTime: session.startTime,
+      gameEndTime: session.gameEndTime,
+      gameDuration: 5 * 60 * 1000, // 5 minutes in milliseconds
+      totalWords: session.totalWords,
+      totalClues: session.clues ? (session.clues.across ? session.clues.across.length : 0) + (session.clues.down ? session.clues.down.length : 0) : 0
+    });
+    console.log(`📢 Broadcasted gameStarted to room: ${roomName}`);
+
+    // ✅ Broadcast crosswordGrid to all players
+    io.to(roomName).emit("crosswordGrid", {
+      game_code,
       grid: crossword.grid,
-      clues: crossword.clues
+      clues: crossword.clues,
+      cellNumbers: crossword.cellNumbers || {},
+      placedWords: crossword.placedWords || []
     });
+    console.log(`📢 Broadcasted crosswordGrid to room: ${roomName}`);
 
-    res.json({ success: true, sessionId });
+    // ✅ Initialize live_leaderboard for all players
+    const connection = await pool.getConnection();
+    try {
+      if (session.players.size > 0) {
+        for (const [user_id, playerData] of session.players) {
+          await connection.query(
+            `
+            INSERT INTO live_leaderboard 
+              (user_id, game_session_id, game_type, game_name, current_score, questions_answered, correct_answers, accuracy)
+            VALUES (?, ?, ?, ?, 0, 0, 0, 0)
+            ON DUPLICATE KEY UPDATE 
+              current_score = 0, 
+              questions_answered = 0, 
+              correct_answers = 0, 
+              accuracy = 0
+            `,
+            [user_id, session.gameSessionId, "Crossword", session.game_name]
+          );
+        }
+        console.log(`✅ Initialized live_leaderboard for ${session.players.size} players`);
+        
+        // ✅ Broadcast initial leaderboard with all 0 scores
+        try {
+          const [initialLeaderboard] = await connection.query(
+            `SELECT 
+               ll.user_id,
+               ll.current_score as score,
+               ll.accuracy,
+               ll.correct_answers,
+               ll.questions_answered as attempts,
+               COALESCE(u.display_name, u.name, u.email, CONCAT('Player_', ll.user_id)) as display_name,
+               u.email,
+               u.name
+             FROM live_leaderboard ll
+             LEFT JOIN users u ON ll.user_id = u.user_id
+             WHERE ll.game_session_id = ?
+             ORDER BY ll.current_score DESC, ll.accuracy DESC`,
+            [session.gameSessionId]
+          );
+          io.to(roomName).emit("crosswordLeaderboardUpdate", initialLeaderboard);
+          console.log(`📊 Broadcasted initial leaderboard with ${initialLeaderboard.length} players`);
+        } catch (leaderboardBroadcastErr) {
+          console.warn("⚠️ Error broadcasting initial leaderboard:", leaderboardBroadcastErr.message);
+        }
+      }
+    } catch (leaderboardErr) {
+      console.warn("⚠️ Leaderboard init warning:", leaderboardErr.message);
+    } finally {
+      connection.release();
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Crossword game ${game_code} started for ${session.players.size} players`,
+      gameSessionId: session.gameSessionId,
+      gridSize: crossword.gridSize,
+      totalWords: crossword.placedWords ? crossword.placedWords.length : 0,
+      timestamp: new Date().toISOString()
+    });
   } catch (err) {
     console.error("Crossword start error:", err);
-    res.status(500).json({ error: "Failed to start crossword game" });
+    res.status(500).json({ error: "Failed to start crossword game", details: err.message });
+  }
+});
+
+// ✅ DEBUG ENDPOINT: Check game status
+app.get("/crossword/game-status/:gameCode", async (req, res) => {
+  const { gameCode } = req.params;
+  
+  try {
+    const session = gameSessions.get(gameCode);
+    
+    res.json({
+      game_code: gameCode,
+      session_exists: !!session,
+      session_state: session?.state || "NONE",
+      players_joined: session?.players?.size || 0,
+      game_active: session?.state === "ACTIVE",
+      room_name: `game_${gameCode}`,
+      rooms: Array.from(io.of("/").sockets.adapter.rooms.keys()).filter(r => r.includes(gameCode))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -648,76 +911,702 @@ app.get("/crossword/generate", async (req, res) => {
 });
 
 // ==========================================
+// ----- CROSSWORD LIVE LEADERBOARD ENDPOINTS -----
+// ==========================================
+
+// ✅ NEW: Record crossword answer with live_leaderboard update (Wisdom Warfare pattern)
+app.post("/crossword/record-answer", async (req, res) => {
+  const {
+    user_id,
+    game_session_id,
+    crossword_question_id,
+    user_answer,
+    game_code,
+  } = req.body;
+
+  if (!user_id || !game_session_id || !crossword_question_id || !user_answer) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing required fields",
+    });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // ✅ Check for duplicate answer
+    const [exists] = await connection.query(
+      `SELECT 1 FROM crossword_answers
+       WHERE user_id = ? AND crossword_question_id = ? AND game_session_id = ?`,
+      [user_id, crossword_question_id, game_session_id]
+    );
+
+    if (exists.length > 0) {
+      await connection.rollback();
+      connection.release();
+      return res.json({
+        ok: false,
+        error: "You have already answered this question",
+        points_earned: 0,
+      });
+    }
+
+    // ✅ Get correct answer and check if user is correct
+    const [[question]] = await connection.query(
+      `SELECT answer FROM crossword_questions WHERE id = ?`,
+      [crossword_question_id]
+    );
+
+    if (!question) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: "Question not found" });
+    }
+
+    const isCorrect =
+      question.answer.trim().toLowerCase() === user_answer.trim().toLowerCase();
+    const pointsEarned = isCorrect ? 10 : 0;
+
+    // ✅ Record crossword answer
+    await connection.query(
+      `INSERT INTO crossword_answers
+        (user_id, crossword_question_id, user_answer, is_correct, points_earned, game_session_id, answered_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [user_id, crossword_question_id, user_answer, isCorrect, pointsEarned, game_session_id]
+    );
+    console.log("✅ Crossword answer recorded:", { user_id, isCorrect, pointsEarned });
+
+    // ✅ Update live_leaderboard (session-specific scores) with proper calculation
+    try {
+      const [existingEntry] = await connection.query(
+        `SELECT current_score, questions_answered, correct_answers FROM live_leaderboard 
+         WHERE user_id = ? AND game_session_id = ?`,
+        [user_id, game_session_id]
+      );
+
+      let newScore = pointsEarned;
+      let questioned_answered = 1;
+      let correct_ans = isCorrect ? 1 : 0;
+      let accuracy = isCorrect ? 100 : 0;
+
+      if (existingEntry.length > 0) {
+        const existing = existingEntry[0];
+        newScore = existing.current_score + pointsEarned;
+        questioned_answered = existing.questions_answered + 1;
+        correct_ans = existing.correct_answers + (isCorrect ? 1 : 0);
+        accuracy = (correct_ans * 100.0) / questioned_answered;
+      }
+
+      await connection.query(
+        `INSERT INTO live_leaderboard 
+          (user_id, game_session_id, game_type, game_name, current_score, questions_answered, correct_answers, accuracy)
+         VALUES (?, ?, 'Crossword', 'A. Crossword', ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           current_score = ?,
+           questions_answered = ?,
+           correct_answers = ?,
+           accuracy = ?`,
+        [user_id, game_session_id, newScore, questioned_answered, correct_ans, accuracy, newScore, questioned_answered, correct_ans, accuracy]
+      );
+      console.log("✅ Live leaderboard updated:", { user_id, newScore, accuracy });
+    } catch (lbError) {
+      console.error("⚠️ Live leaderboard update error:", lbError.message);
+    }
+
+    // ✅ Update crossword_scores table (permanent record) with proper accuracy calculation
+    try {
+      const [existingScore] = await connection.query(
+        `SELECT score, attempts, correct_answers FROM crossword_scores 
+         WHERE user_id = ? AND game_session_id = ?`,
+        [user_id, game_session_id]
+      );
+
+      let newTotalScore = pointsEarned;
+      let newAttempts = 1;
+      let newCorrectAnswers = isCorrect ? 1 : 0;
+      let newAccuracy = isCorrect ? 100 : 0;
+
+      if (existingScore.length > 0) {
+        const existing = existingScore[0];
+        newTotalScore = existing.score + pointsEarned;
+        newAttempts = existing.attempts + 1;
+        newCorrectAnswers = existing.correct_answers + (isCorrect ? 1 : 0);
+        newAccuracy = (newCorrectAnswers * 100.0) / newAttempts;
+      }
+
+      await connection.query(
+        `INSERT INTO crossword_scores
+          (user_id, game_name, score, attempts, correct_answers, accuracy, game_session_id, last_updated)
+         VALUES (?, 'A. Crossword', ?, ?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE
+           score = ?,
+           attempts = ?,
+           correct_answers = ?,
+           accuracy = ?,
+           last_updated = NOW()`,
+        [user_id, newTotalScore, newAttempts, newCorrectAnswers, newAccuracy, game_session_id, newTotalScore, newAttempts, newCorrectAnswers, newAccuracy]
+      );
+      console.log("✅ Crossword scores table updated:", { user_id, newTotalScore, newAccuracy });
+    } catch (scoreError) {
+      console.error("⚠️ Crossword scores update error:", scoreError.message);
+    }
+
+    await connection.commit();
+
+    // ✅ NEW: Check for game completion - has this player answered all words correctly?
+    let playerCompletionInfo = null;
+    let gameCompletion = null;
+
+    if (isCorrect) {
+      try {
+        // Count total correct answers by this player
+        const [[playerStats]] = await connection.query(
+          `SELECT COUNT(*) as correct_count FROM crossword_answers 
+           WHERE user_id = ? AND game_session_id = ? AND is_correct = 1`,
+          [user_id, game_session_id]
+        );
+
+        const session = crosswordSessions.get(game_session_id);
+        const totalWords = session ? session.totalWords : 0;
+        const correctCount = playerStats?.correct_count || 0;
+
+        console.log(`🎯 Player ${user_id}: ${correctCount}/${totalWords} words correct`);
+
+        // Check if player completed all words
+        if (totalWords > 0 && correctCount >= totalWords && !session?.playerCompletionTime?.has(user_id)) {
+          const completionTime = Date.now();
+          session.playerCompletionTime.set(user_id, completionTime);
+
+          // Fetch player info for winner announcement
+          const [[playerInfo]] = await connection.query(
+            `SELECT u.display_name, u.email FROM users u WHERE u.user_id = ?`,
+            [user_id]
+          );
+
+          const playerName = playerInfo?.display_name || playerInfo?.email?.split('@')[0] || `Player ${user_id}`;
+
+          playerCompletionInfo = {
+            user_id,
+            playerName,
+            completionTime,
+            correctAnswers: correctCount,
+            totalWords,
+            isWinner: session.winners.length === 0 // First to complete is the winner
+          };
+
+          // Track winners in order
+          if (session.winners.length === 0) {
+            session.winners.push(playerCompletionInfo);
+            console.log(`🏆 WINNER FOUND: ${playerName} completed all ${totalWords} words!`);
+            gameCompletion = {
+              winner: playerCompletionInfo,
+              allWinners: session.winners,
+              message: `${playerName} completed the crossword first! 🎉`
+            };
+          }
+        }
+      } catch (completionCheckErr) {
+        console.error("⚠️ Error checking game completion:", completionCheckErr.message);
+      }
+    }
+
+    // ✅ Fetch live leaderboard for response with proper display_name
+    let leaderboard = [];
+    try {
+      const [lbData] = await connection.query(
+        `SELECT 
+           ll.user_id,
+           ll.current_score as score,
+           ll.accuracy,
+           ll.correct_answers,
+           ll.questions_answered as attempts,
+           COALESCE(u.display_name, u.email, CONCAT('Player_', ll.user_id)) as display_name,
+           u.email,
+           u.name
+         FROM live_leaderboard ll
+         LEFT JOIN users u ON ll.user_id = u.user_id
+         WHERE ll.game_session_id = ?
+         ORDER BY ll.current_score DESC, ll.accuracy DESC
+         LIMIT 10`,
+        [game_session_id]
+      );
+      leaderboard = lbData || [];
+      console.log(`✅ Leaderboard fetched: ${leaderboard.length} players`);
+    } catch (lbFetchError) {
+      console.error("⚠️ Error fetching leaderboard:", lbFetchError.message);
+    }
+
+    connection.release();
+
+    res.json({
+      ok: true,
+      points_earned: pointsEarned,
+      leaderboard: leaderboard,
+      playerCompletion: playerCompletionInfo,
+      gameCompletion: gameCompletion
+    });
+
+    // ✅ Schedule debounced leaderboard broadcast to game room
+    if (game_code) {
+      scheduleCrosswordLeaderboardBroadcast(game_code, game_session_id);
+      
+      // If there's a winner, broadcast it immediately
+      if (gameCompletion) {
+        const roomName = `game_${game_code}`;
+        io.to(roomName).emit("gameWinner", gameCompletion);
+        console.log(`📢 Broadcasted game winner to room: ${roomName}`);
+      }
+    }
+  } catch (err) {
+    await connection.rollback();
+    connection.release();
+    console.error("record-answer error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ NEW: Get game timer status
+app.get("/crossword/game-timer/:gameCode", async (req, res) => {
+  try {
+    const { gameCode } = req.params;
+    const session = gameSessions.get(gameCode);
+
+    if (!session) {
+      return res.json({
+        success: false,
+        error: "Game session not found",
+        gameActive: false
+      });
+    }
+
+    const currentTime = Date.now();
+    const timeRemaining = Math.max(0, session.gameEndTime - currentTime);
+    const isGameActive = timeRemaining > 0;
+    const isGameExpired = timeRemaining === 0;
+
+    res.json({
+      success: true,
+      gameCode,
+      gameActive: isGameActive,
+      gameExpired: isGameExpired,
+      startTime: session.startTime,
+      endTime: session.gameEndTime,
+      timeRemaining: timeRemaining,
+      timeRemainingSeconds: Math.ceil(timeRemaining / 1000),
+      winners: session.winners || [],
+      totalWords: session.totalWords || 0
+    });
+  } catch (err) {
+    console.error("GET /crossword/game-timer error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ NEW: Get game winner
+app.get("/crossword/game-winner/:gameCode", async (req, res) => {
+  try {
+    const { gameCode } = req.params;
+    const session = gameSessions.get(gameCode);
+
+    if (!session) {
+      return res.json({
+        success: false,
+        error: "Game session not found"
+      });
+    }
+
+    const winner = session.winners && session.winners.length > 0 ? session.winners[0] : null;
+
+    res.json({
+      success: true,
+      gameCode,
+      winner: winner,
+      hasWinner: !!winner,
+      allWinners: session.winners || [],
+      totalWords: session.totalWords || 0,
+      message: winner ? `${winner.playerName} won the game!` : "No winner yet"
+    });
+  } catch (err) {
+    console.error("GET /crossword/game-winner error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ Fetch live leaderboard for crossword game session with proper display_name
+app.get("/crossword/live-leaderboard/:gameSessionId", async (req, res) => {
+  try {
+    const { gameSessionId } = req.params;
+
+    const [leaderboard] = await pool.query(
+      `SELECT 
+         ll.user_id, 
+         u.email, 
+         COALESCE(u.display_name, u.email, CONCAT('Player_', ll.user_id)) as display_name,
+         u.name,
+         ll.current_score as score,
+         ll.accuracy,
+         ll.correct_answers,
+         ll.questions_answered as attempts
+       FROM live_leaderboard ll
+       LEFT JOIN users u ON ll.user_id = u.user_id
+       WHERE ll.game_session_id = ? AND ll.game_type = 'Crossword'
+       ORDER BY ll.current_score DESC, ll.accuracy DESC`,
+      [gameSessionId]
+    );
+
+    res.json({
+      success: true,
+      gameSessionId: gameSessionId,
+      leaderboard: leaderboard,
+      totalPlayers: leaderboard.length,
+    });
+  } catch (err) {
+    console.error("GET /crossword/live-leaderboard error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ End crossword game session and transfer scores
+app.post("/crossword/game/end-session/:gameSessionId", async (req, res) => {
+  try {
+    const { gameSessionId } = req.params;
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      // ✅ Get all live leaderboard entries for this crossword session
+      const [liveEntries] = await connection.query(
+        `SELECT * FROM live_leaderboard WHERE game_session_id = ? AND game_type = 'Crossword'`,
+        [gameSessionId]
+      );
+
+      if (liveEntries.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.json({
+          success: true,
+          message: "No active players in this crossword session",
+          transferred: 0,
+        });
+      }
+
+      // ✅ Transfer each player's session scores to crossword_scores (permanent record already done per-answer)
+      // This ensures session data is preserved in the event of game end
+      for (const entry of liveEntries) {
+        // Scores are already being recorded in crossword_scores per answer
+        // This just ensures consistency
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "Crossword game session ended. Scores finalized.",
+        gameSessionId: gameSessionId,
+        playersProcessed: liveEntries.length,
+        transferred: liveEntries.length,
+      });
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error("POST /crossword/game/end-session error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ End crossword game session and transfer scores
+app.post("/crossword/game/end-session/:gameSessionId", async (req, res) => {
+  try {
+    const { gameSessionId } = req.params;
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      // ✅ Get all live leaderboard entries for this crossword session
+      const [liveEntries] = await connection.query(
+        `SELECT * FROM live_leaderboard WHERE game_session_id = ? AND game_type = 'Crossword'`,
+        [gameSessionId]
+      );
+
+      if (liveEntries.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.json({
+          success: true,
+          message: "No active players in this crossword session",
+          transferred: 0,
+        });
+      }
+
+      // ✅ Transfer each player's session scores to crossword_scores (permanent record already done per-answer)
+      // This ensures session data is preserved in the event of game end
+      for (const entry of liveEntries) {
+        // Scores are already being recorded in crossword_scores per answer
+        // This just ensures consistency
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "Crossword game session ended. Scores finalized.",
+        gameSessionId: gameSessionId,
+        playersProcessed: liveEntries.length,
+        transferred: liveEntries.length,
+      });
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error("POST /crossword/game/end-session error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
 // ----- CROSSWORD SOCKET EVENTS -----
 // ==========================================
 
 io.on("connection", (socket) => {
   console.log("✅ Crossword socket connected:", socket.id);
 
-  socket.on("joinGame", async ({ game_code, user_id }) => {
-    if (game_code) {
-      socket.join(game_code);
-      console.log(`📊 Socket ${socket.id} (User: ${user_id}) joined crossword game: ${game_code}`);
+  // ✅ FIX 1: Join game WITHOUT auto-start
+  socket.on("joinGame", async ({ game_code, user_id, email, game_type }) => {
+    if (!game_code) return;
 
-      // Auto-start crossword when first player joins
-      const status = crosswordGameStatus.get(game_code);
+    // Use proper room naming convention
+    const roomName = `game_${game_code}`;
+    socket.join(roomName);
+    console.log(`📊 Socket ${socket.id} (User: ${user_id}) joined crossword room: ${roomName}`);
 
-      if (!status || !status.started) {
-        console.log("🧩 Auto-starting crossword for game:", game_code);
-
-        try {
-          const [questions] = await pool.query(
-            "SELECT id, question, answer FROM crossword_questions LIMIT 15"
-          );
-
-          if (questions.length === 0) {
-            socket.emit("crosswordError", {
-              error: "No crossword questions available"
-            });
-            return;
-          }
-
-          const crossword = generateCrosswordGrid(questions);
-          const sessionId = generateCrosswordSessionId();
-
-          crosswordSessions.set(sessionId, {
-            grid: crossword.grid,
-            clues: crossword.clues,
-            solvedWords: new Set(),
-            solvedUsers: new Map(),
-            gameCode: game_code,
-            startTime: Date.now()
-          });
-
-          crosswordGameStatus.set(game_code, {
-            started: true,
-            sessionId
-          });
-
-          io.to(game_code).emit("crosswordGrid", {
-            grid: crossword.grid,
-            clues: crossword.clues
-          });
-
-        } catch (err) {
-          console.error("Auto crossword start error:", err);
-        }
-      } else {
-        // Game already started, send current state
-        const session = crosswordSessions.get(status.sessionId);
-        if (session) {
-          socket.emit("crosswordGrid", {
-            grid: session.grid,
-            clues: session.clues
-          });
-        }
-      }
+    // Initialize session if needed
+    if (!gameSessions.has(game_code)) {
+      const gameSessionId = generateCrosswordSessionId();
+      gameSessions.set(game_code, {
+        gameSessionId,
+        game_type: "Crossword",
+        game_name: game_type,
+        state: "WAITING_FOR_TEACHER",
+        started: false,
+        players: new Map(),
+        startTime: null,
+        grid: null,
+        clues: null
+      });
+      console.log(`✅ Initialized new crossword session for game: ${game_code}, ID: ${gameSessionId}`);
     }
+
+    const session = gameSessions.get(game_code);
+    
+    // Add player to session if not already there
+    if (!session.players.has(user_id)) {
+      session.players.set(user_id, {
+        user_id,
+        email,
+        joinedAt: Date.now(),
+        answered: false,
+        score: 0
+      });
+      console.log(`✅ Added player ${user_id} to session. Total players: ${session.players.size}`);
+    }
+
+    // ✅ Broadcast updated player list to all players in the room
+    const playerList = Array.from(session.players.values()).map(p => ({
+      user_id: p.user_id,
+      email: p.email,
+      display_name: p.email ? p.email.split('@')[0] : `Player_${p.user_id}`,
+      joinedAt: p.joinedAt
+    }));
+    
+    console.log(`🔊 Broadcasting playerListUpdate to room ${roomName}:`, {
+      game_code,
+      playerCount: session.players.size,
+      players: playerList.map(p => p.display_name)
+    });
+    
+    io.to(roomName).emit("playerListUpdate", {
+      game_code,
+      players: playerList,
+      playerCount: session.players.size
+    });
+    console.log(`📢 Broadcasted player list update: ${playerList.length} players to room ${roomName}`);
+
+    // ✅ CRITICAL: Emit gameStatus with isGameActive: false (WAITING state)
+    socket.emit("gameStatus", {
+      game_code,
+      isGameActive: false,
+      state: "WAITING_FOR_TEACHER",
+      gameSessionId: session.gameSessionId,
+      playerCount: session.players.size,
+      message: "Waiting for teacher to start the crossword game..."
+    });
+
+    console.log(`📢 Sent gameStatus (NOT ACTIVE) to player ${user_id}`);
   });
 
-  socket.on("crosswordJoin", ({ sessionId }) => {
-    socket.join(sessionId);
-    console.log(`📊 Socket ${socket.id} joined crossword session: ${sessionId}`);
+  // ✅ FIX 2: Get current game status
+  socket.on("getGameStatus", ({ game_code }) => {
+    if (!game_code) return;
+
+    const session = gameSessions.get(game_code);
+    if (!session) {
+      socket.emit("gameStatus", {
+        game_code,
+        isGameActive: false,
+        state: "WAITING_FOR_TEACHER",
+        message: "Game session not found"
+      });
+      return;
+    }
+
+    socket.emit("gameStatus", {
+      game_code,
+      isGameActive: session.state === "ACTIVE",
+      state: session.state,
+      gameSessionId: session.gameSessionId,
+      message: session.state === "WAITING_FOR_TEACHER" 
+        ? "Waiting for teacher to start..." 
+        : "Game is now active"
+    });
+  });
+
+  // ✅ FIX 3: NEW - Teacher-triggered game start
+  socket.on("startCrosswordGame", async ({ game_code }) => {
+    if (!game_code) {
+      console.warn("⚠️ startCrosswordGame: No game_code provided");
+      return;
+    }
+
+    try {
+      const roomName = `game_${game_code}`;
+      let session = gameSessions.get(game_code);
+      
+      if (!session) {
+        console.warn(`⚠️ Session not found for game: ${game_code}`);
+        return;
+      }
+
+      console.log(`🚀 Teacher starting crossword game: ${game_code}`);
+
+      // ✅ Fetch ALL questions dynamically with random selection
+      const questions = await fetchCrosswordQuestions(20);
+
+      if (!questions || questions.length === 0) {
+        io.to(roomName).emit("crosswordError", {
+          error: "No crossword questions available"
+        });
+        return;
+      }
+
+      // ✅ Generate crossword grid (creates DIFFERENT grid each time)
+      const crossword = generateCrosswordGrid(questions);
+
+      // Update session
+      session.state = "ACTIVE";
+      session.started = true;
+      session.startTime = Date.now();
+      session.grid = crossword.grid;
+      session.clues = crossword.clues;
+
+      // Store session data for reference
+      crosswordSessions.set(session.gameSessionId, {
+        grid: crossword.grid,
+        clues: crossword.clues,
+        letters: crossword.letters,
+        solvedWords: new Set(),
+        solvedUsers: new Map(),
+        gameCode,
+        gameSessionId: session.gameSessionId,
+        startTime: session.startTime,
+        placedWords: crossword.placedWords
+      });
+
+      console.log(`✅ Crossword grid generated with ${questions.length} questions for game: ${game_code}`);
+
+      // ✅ Broadcast gameStarted event to ALL players first
+      io.to(roomName).emit("gameStarted", {
+        game_code,
+        gameSessionId: session.gameSessionId,
+        message: "Crossword game is starting now!"
+      });
+      console.log(`📢 Broadcasted gameStarted to room: ${roomName}`);
+
+      // ✅ Then broadcast the grid
+      io.to(roomName).emit("crosswordGrid", {
+        game_code,
+        grid: crossword.grid,
+        clues: crossword.clues,
+        cellNumbers: crossword.cellNumbers || {},
+        placedWords: crossword.placedWords || []
+      });
+      console.log(`📢 Broadcasted crosswordGrid to room: ${roomName}`);
+
+      // Initialize live_leaderboard for all players in this session
+      const connection = await pool.getConnection();
+      try {
+        if (session.players.size > 0) {
+          for (const [user_id, playerData] of session.players) {
+            await connection.query(
+              `
+              INSERT INTO live_leaderboard 
+                (user_id, game_session_id, game_type, game_name, current_score, questions_answered, correct_answers, accuracy)
+              VALUES (?, ?, ?, ?, 0, 0, 0, 0)
+              ON DUPLICATE KEY UPDATE 
+                current_score = 0, 
+                questions_answered = 0, 
+                correct_answers = 0, 
+                accuracy = 0
+              `,
+              [user_id, session.gameSessionId, "Crossword", session.game_name]
+            );
+          }
+          console.log(`✅ Initialized live_leaderboard for ${session.players.size} players`);
+          
+          // ✅ Broadcast initial leaderboard with all 0 scores
+          try {
+            const [initialLeaderboard] = await connection.query(
+              `SELECT 
+                 ll.user_id,
+                 ll.current_score as score,
+                 ll.accuracy,
+                 ll.correct_answers,
+                 ll.questions_answered as attempts,
+                 COALESCE(u.display_name, CONCAT('Player_', ll.user_id)) as display_name,
+                 u.email
+               FROM live_leaderboard ll
+               LEFT JOIN users u ON ll.user_id = u.user_id
+               WHERE ll.game_session_id = ?
+               ORDER BY ll.current_score DESC, ll.accuracy DESC`,
+              [session.gameSessionId]
+            );
+            io.to(roomName).emit("crosswordLeaderboardUpdate", initialLeaderboard);
+            console.log(`📊 Broadcasted initial leaderboard with ${initialLeaderboard.length} players`);
+          } catch (leaderboardBroadcastErr) {
+            console.warn("⚠️ Error broadcasting initial leaderboard:", leaderboardBroadcastErr.message);
+          }
+        }
+      } catch (leaderboardErr) {
+        console.warn("⚠️ Leaderboard init warning:", leaderboardErr.message);
+      } finally {
+        connection.release();
+      }
+
+    } catch (err) {
+      console.error("startCrosswordGame error:", err);
+      io.to(`game_${game_code}`).emit("crosswordError", {
+        error: "Failed to start crossword game"
+      });
+    }
   });
 
   // Word locking for anti-cheat
@@ -750,6 +1639,8 @@ io.on("connection", (socket) => {
       crossword_question_id,
       user_id
     });
+
+    console.log(`🔒 Word locked: user ${user_id} locked question ${crossword_question_id}`);
   });
 
   // Word unlock
@@ -758,11 +1649,12 @@ io.on("connection", (socket) => {
     if (sessionLocks) {
       sessionLocks.delete(user_id);
       io.to(sessionId).emit("wordUnlocked", { user_id });
+      console.log(`🔓 Word unlocked: user ${user_id}`);
     }
   });
 
-  // Crossword submit with anti-cheat checks
-  socket.on("crosswordSubmit", async ({ sessionId, user_id, word, crossword_question_id }) => {
+  // ✅ FIX 4: Crossword answer submission with leaderboard update
+  socket.on("crosswordSubmit", async ({ sessionId, game_code, user_id, word, crossword_question_id }) => {
     try {
       const session = crosswordSessions.get(sessionId);
       if (!session) {
@@ -780,7 +1672,6 @@ io.on("connection", (socket) => {
           });
           return;
         }
-        // Remove the lock after submission
         sessionLocks.delete(user_id);
       }
 
@@ -822,21 +1713,52 @@ io.on("connection", (socket) => {
           `,
           [user_id, crossword_question_id, word, isCorrect, points, sessionId]
         );
+
+        // Update player stats
+        if (isCorrect) {
+          await connection.query(
+            `
+            UPDATE live_leaderboard 
+            SET current_score = current_score + ?, 
+                questions_answered = questions_answered + 1,
+                correct_answers = correct_answers + 1,
+                accuracy = (correct_answers + 1) / (questions_answered + 1) * 100
+            WHERE game_session_id = ? AND user_id = ?
+            `,
+            [points, sessionId, user_id]
+          );
+        } else {
+          await connection.query(
+            `
+            UPDATE live_leaderboard 
+            SET questions_answered = questions_answered + 1,
+                accuracy = correct_answers / (questions_answered + 1) * 100
+            WHERE game_session_id = ? AND user_id = ?
+            `,
+            [sessionId, user_id]
+          );
+        }
       } finally {
         connection.release();
       }
 
-      io.to(session.gameCode).emit("wordSolved", {
+      // ✅ Trigger debounced leaderboard broadcast
+      scheduleCrosswordLeaderboardBroadcast(game_code, sessionId);
+
+      io.to(session.gameCode || `game_${game_code}`).emit("wordSolved", {
         wordId: crossword_question_id,
         user: { user_id },
-        points,
+        points: isCorrect ? points : 0,
+        isCorrect,
         timeBonus: timeBonus > 0 ? `+${timeBonus} time bonus` : null
       });
+
+      console.log(`✅ Word submitted - Correct: ${isCorrect}, Points: ${points}, User: ${user_id}`);
 
       socket.emit("crosswordSubmitResult", {
         success: true,
         correct: isCorrect,
-        points
+        points: isCorrect ? points : 0
       });
     } catch (err) {
       console.error("crosswordSubmit error:", err);
@@ -846,6 +1768,31 @@ io.on("connection", (socket) => {
 
   socket.on("crosswordSolved", data => {
     io.to(data.sessionId).emit("crosswordUpdate", data);
+  });
+
+  // ✅ NEW: End crossword game
+  socket.on("endCrosswordGame", async ({ game_code, gameSessionId }) => {
+    try {
+      const session = gameSessions.get(game_code);
+      if (session) {
+        session.state = "ENDED";
+        console.log(`⏹️ Crossword game ended: ${game_code}`);
+
+        // Fetch final leaderboard
+        const [leaderboard] = await pool.query(
+          "SELECT * FROM live_leaderboard WHERE game_session_id = ? ORDER BY current_score DESC",
+          [gameSessionId]
+        );
+
+        io.to(`game_${game_code}`).emit("gameEnded", {
+          game_code,
+          leaderboard,
+          message: "Crossword game has ended"
+        });
+      }
+    } catch (err) {
+      console.error("endCrosswordGame error:", err);
+    }
   });
 
   socket.on("disconnect", () => {

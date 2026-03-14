@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎮 Teacher Crossword Game Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .game-code-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 20px;
+            transition: border-color 0.3s;
+        }
+
+        .game-code-input:focus {
+            outline: none;
+            border-color: #667eea;
+            background-color: #f9f9ff;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-start:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-start:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-start:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-check {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .btn-check:hover:not(:disabled) {
+            background: #138496;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(23, 162, 184, 0.4);
+        }
+
+        .status-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .status-label {
+            color: #666;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            color: #333;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+
+        .success {
+            background-color: #d4edda;
+            border-left-color: #28a745;
+            color: #155724;
+        }
+
+        .success .status-value {
+            color: #155724;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+
+        .error .status-value {
+            color: #721c24;
+        }
+
+        .info {
+            background-color: #d1ecf1;
+            border-left-color: #17a2b8;
+            color: #0c5460;
+        }
+
+        .info .status-value {
+            color: #0c5460;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .instructions {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #856404;
+            margin-top: 20px;
+        }
+
+        .instructions h3 {
+            margin-bottom: 10px;
+            color: #856404;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+        }
+
+        .game-info {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .game-info.show {
+            display: block;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #b3d9ff;
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #0066cc;
+        }
+
+        .info-value {
+            color: #333;
+        }
+
+        .spinner-text {
+            display: inline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Crossword Manager</h1>
+        <p class="subtitle">Start games instantly for all players</p>
+
+        <div class="game-code-input">
+            <input type="text" id="gameCode" placeholder="Enter Game Code (e.g., S3560K)" 
+                   maxlength="10" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 16px;">
+        </div>
+
+        <div class="button-group">
+            <button class="btn btn-check" onclick="checkGameStatus()">📊 Check Status</button>
+            <button class="btn btn-start" id="startBtn" onclick="startGame()">🚀 START GAME</button>
+        </div>
+
+        <div id="statusBox" class="status-box" style="display: none;">
+            <div class="status-label" id="statusLabel"></div>
+            <div class="status-value" id="statusValue"></div>
+        </div>
+
+        <div id="gameInfo" class="game-info">
+            <div class="info-row">
+                <span class="info-label">Status:</span>
+                <span class="info-value" id="infoStatus">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Players Joined:</span>
+                <span class="info-value" id="infoPlayers">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Game Active:</span>
+                <span class="info-value" id="infoActive">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Room:</span>
+                <span class="info-value" id="infoRoom" style="font-family: monospace; font-size: 12px;">-</span>
+            </div>
+        </div>
+
+        <div class="instructions">
+            <h3>📋 How to Use:</h3>
+            <ol>
+                <li>Have students join with the game code</li>
+                <li>They will see "⏳ Waiting for teacher..."</li>
+                <li>Enter the game code above and click "START GAME"</li>
+                <li>All students will see the crossword instantly</li>
+                <li>Monitor in real-time as they answer words</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://localhost:4002";
+
+        function showStatus(type, title, message) {
+            const box = document.getElementById("statusBox");
+            const label = document.getElementById("statusLabel");
+            const value = document.getElementById("statusValue");
+
+            box.className = `status-box ${type}`;
+            label.textContent = title;
+            value.textContent = message;
+            box.style.display = "block";
+
+            // Auto hide success messages after 3 seconds
+            if (type === "success") {
+                setTimeout(() => {
+                    box.style.display = "none";
+                }, 3000);
+            }
+        }
+
+        function hideStatus() {
+            document.getElementById("statusBox").style.display = "none";
+        }
+
+        async function checkGameStatus() {
+            const gameCode = document.getElementById("gameCode").value.toUpperCase().trim();
+
+            if (!gameCode) {
+                showStatus("error", "❌ Error", "Please enter a game code");
+                return;
+            }
+
+            try {
+                showStatus("info", "⏳ Checking...", "Getting game status...");
+
+                const response = await fetch(`${API_BASE}/crossword/game-status/${gameCode}`);
+                const data = await response.json();
+
+                if (!data.session_exists) {
+                    showStatus("error", "❌ Not Found", `No players joined game ${gameCode} yet`);
+                    document.getElementById("gameInfo").classList.remove("show");
+                    return;
+                }
+
+                // Show game info
+                const gameInfo = document.getElementById("gameInfo");
+                gameInfo.classList.add("show");
+
+                document.getElementById("infoStatus").textContent = data.session_state;
+                document.getElementById("infoPlayers").textContent = `${data.players_joined} player(s)`;
+                document.getElementById("infoActive").textContent = data.game_active ? "✅ YES (Running)" : "❌ NO (Waiting)";
+                document.getElementById("infoRoom").textContent = data.room_name;
+
+                if (data.game_active) {
+                    showStatus("success", "✅ Game Active", `Game ${gameCode} is already running with ${data.players_joined} players`);
+                    document.getElementById("startBtn").textContent = "⏹️ GAME ACTIVE";
+                    document.getElementById("startBtn").disabled = true;
+                } else {
+                    showStatus("info", "✅ Ready to Start", `Game ${gameCode} has ${data.players_joined} player(s) waiting`);
+                    document.getElementById("startBtn").textContent = "🚀 START GAME";
+                    document.getElementById("startBtn").disabled = false;
+                }
+            } catch (err) {
+                showStatus("error", "❌ Error", `Failed to check status: ${err.message}`);
+                document.getElementById("gameInfo").classList.remove("show");
+            }
+        }
+
+        async function startGame() {
+            const gameCode = document.getElementById("gameCode").value.toUpperCase().trim();
+
+            if (!gameCode) {
+                showStatus("error", "❌ Error", "Please enter a game code");
+                return;
+            }
+
+            try {
+                const btn = document.getElementById("startBtn");
+                btn.disabled = true;
+                btn.innerHTML = '<span class="loading"></span><span class="spinner-text">Starting...</span>';
+
+                showStatus("info", "🚀 Starting Game...", "Broadcasting to all players...");
+
+                const response = await fetch(`${API_BASE}/crossword/start-game`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ game_code: gameCode })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus("success", "✅ Game Started!", 
+                        `Game ${gameCode} started for ${data.message.match(/\d+ player/)?.[0] || 'all'} players\n\nSession: ${data.gameSessionId}\n\nAll players should now see the crossword!`);
+                    
+                    btn.textContent = "⏹️ GAME ACTIVE";
+                    btn.disabled = true;
+
+                    // Check status again after 2 seconds
+                    setTimeout(() => checkGameStatus(), 2000);
+                } else {
+                    showStatus("error", "❌ Start Failed", data.error || "Unknown error");
+                    btn.textContent = "🚀 START GAME";
+                    btn.disabled = false;
+                }
+            } catch (err) {
+                showStatus("error", "❌ Connection Error", err.message);
+                const btn = document.getElementById("startBtn");
+                btn.textContent = "🚀 START GAME";
+                btn.disabled = false;
+            }
+        }
+
+        // Allow Enter key to trigger start
+        document.getElementById("gameCode").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                startGame();
+            }
+        });
+
+        // Show instructions on load
+        console.log("✅ Teacher Crossword Controller Ready");
+        console.log("API Base:", API_BASE);
+    </script>
+</body>
+</html>

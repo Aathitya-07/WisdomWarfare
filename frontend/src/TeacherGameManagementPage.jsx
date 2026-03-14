@@ -1105,20 +1105,12 @@ function TeacherGameManagementPage() {
     { name: "A. Crossword", icon: "📝", type: "CROSSWORD" },
   ];
 
-  // Crossword API handlers
+  // Crossword API handlers - use the one from crosswordteacher.js
   const fetchCrosswordQuestions = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/crossword/questions`);
-      const data = await res.json();
-      
-      if (Array.isArray(data)) {
-        setCrosswordQuestions(data);
-      } else if (data.questions && Array.isArray(data.questions)) {
-        setCrosswordQuestions(data.questions);
-      } else {
-        setCrosswordQuestions([]);
-      }
+      const questions = await fetchCrosswordQuestionsAPI();
+      setCrosswordQuestions(questions);
     } catch (error) {
       console.error("Error fetching crossword questions:", error);
       setCrosswordQuestions([]);
@@ -1576,22 +1568,10 @@ function TeacherGameManagementPage() {
       if (gameName === "A. Crossword") {
         console.log("🎮 Starting Crossword game...");
         
-        const questionsRes = await fetch(`${API_BASE}/crossword/questions`);
-        const questionsData = await questionsRes.json();
-        const crosswordQuestions = Array.isArray(questionsData) 
-          ? questionsData 
-          : questionsData.questions || [];
-
-        if (crosswordQuestions.length === 0) {
-          alert("❌ Add crossword questions before starting the game");
-          setStarting(false);
-          return;
-        }
-
-        // Use the new startCrosswordGame function
-        const gameResult = await startCrosswordGameAPI(crosswordQuestions);
+        // Use the new startCrosswordGame function with gameCode
+        const gameResult = await startCrosswordGameAPI(gameCode);
         
-        alert(`✅ Crossword game started successfully!\n📊 Grid: ${gameResult.gridSize}x${gameResult.gridSize}\n📝 Words: ${gameResult.totalWords}`);
+        alert(`✅ Crossword game started successfully!`)
       } else if (gameName === "Wisdom Warfare") {
         console.log("🎮 Starting Wisdom Warfare Quiz game...");
         

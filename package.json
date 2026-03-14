@@ -2,9 +2,9 @@
   "name": "wisdom-project",
   "version": "1.0.0",
   "scripts": {
-    "start": "concurrently \"npm run start --prefix backend\" \"npm run start --prefix frontend\"",
+    "start": "concurrently \"npm run start --prefix backend\" \"npm run start:crossword --prefix backend\" \"npm run start --prefix frontend\"",
     "install-all": "npm install && npm install --prefix backend && npm install --prefix frontend",
-    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run start --prefix frontend\""
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run start:crossword --prefix backend\" \"npm run start --prefix frontend\""
   },
   "devDependencies": {
     "concurrently": "^7.6.0",
