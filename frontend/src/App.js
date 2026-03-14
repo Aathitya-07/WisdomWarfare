@@ -13,6 +13,7 @@ import GamePage from "./GamePage";
 import TeacherGameManagementPage from "./TeacherGameManagementPage";
 import TeacherAnalyticsDashboard from "./components/TeacherAnalyticsDashboard/TeacherAnalyticsDashboard";
 import GameUI from "./components/GameUI/GameUI";
+import CrosswordGame from "./components/GameUI/CrosswordGame";
 import StudentDashboard from "./components/StudentDashboard/StudentDashboard";
 import "./App.css";
 
@@ -163,6 +164,17 @@ function GameUIRoute({ user, onLogout, onFinish }) {
 
   if (!gameCode || !gameType) {
     return <Navigate to="/gamepage" replace />;
+  }
+
+  if (gameType === "A. Crossword") {
+    return (
+      <CrosswordGame
+        user={user}
+        onLogout={onLogout}
+        gameCode={gameCode}
+        gameName={gameName}
+      />
+    );
   }
 
   return (

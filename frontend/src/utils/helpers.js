@@ -163,6 +163,146 @@ export const generateId = (length = 8) => {
   }
   return result;
 };
+const toNumber = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+};
+const getPlayerKey = (player) => {
+  if (!player) return null;
+  return player.user_id ?? player.id ?? player.email ?? player.display_name ?? player.name ?? null;
+};
+export const mergeGameLeaderboards = (wisdomPlayers = [], crosswordPlayers = []) => {
+  const merged = new Map();
+  const ensurePlayer = (player) => {
+    const key = getPlayerKey(player);
+    if (key === null || key === undefined) return null;
+    if (!merged.has(key)) {
+      merged.set(key, {
+        user_id: player.user_id ?? player.id ?? null,
+        id: player.id ?? player.user_id ?? null,
+        email: player.email || '',
+        display_name: player.display_name || player.name || '',
+        name: player.name || player.display_name || '',
+        role: player.role || 'student',
+        wisdom_score: 0,
+        wisdom_attempts: 0,
+        wisdom_correct_answers: 0,
+        wisdom_accuracy: 0,
+        crossword_score: 0,
+        crossword_attempts: 0,
+        crossword_correct_answers: 0,
+        crossword_accuracy: 0,
+      });
+    }
+    const existing = merged.get(key);
+    existing.user_id = existing.user_id ?? player.user_id ?? player.id ?? null;
+    existing.id = existing.id ?? player.id ?? player.user_id ?? null;
+    existing.email = existing.email || player.email || '';
+    existing.display_name = existing.display_name || player.display_name || player.name || '';
+    existing.name = existing.name || player.name || player.display_name || '';
+    existing.role = existing.role || player.role || 'student';
+    return existing;
+  };
+  wisdomPlayers.forEach((player) => {
+    const entry = ensurePlayer(player);
+    if (!entry) return;
+    entry.wisdom_score = toNumber(player.score ?? player.wisdom_score ?? player.totalScore);
+    entry.wisdom_attempts = toNumber(player.attempts ?? player.questions_answered ?? player.wisdom_attempts ?? player.gamesPlayed);
+    entry.wisdom_correct_answers = toNumber(player.correct_answers ?? player.wisdomCorrect ?? player.correct);
+    entry.wisdom_accuracy = toNumber(player.accuracy ?? player.wisdomAccuracy);
+  });
+  crosswordPlayers.forEach((player) => {
+    const entry = ensurePlayer(player);
+    if (!entry) return;
+    entry.crossword_score = toNumber(player.score ?? player.crossword_score ?? player.crosswordScore ?? player.totalScore);
+    entry.crossword_attempts = toNumber(player.attempts ?? player.questions_answered ?? player.crossword_attempts ?? player.crosswordGames ?? player.gamesPlayed);
+    entry.crossword_correct_answers = toNumber(player.correct_answers ?? player.crosswordCorrect ?? player.correct);
+    entry.crossword_accuracy = toNumber(player.accuracy ?? player.crosswordAccuracy);
+  });
+  return Array.from(merged.values())
+    .map((player) => {
+      const totalAttempts = player.wisdom_attempts + player.crossword_attempts;
+      const totalCorrect = player.wisdom_correct_answers + player.crossword_correct_answers;
+      const totalScore = player.wisdom_score + player.crossword_score;
+      const combinedAccuracy = totalAttempts > 0 ? (totalCorrect * 100) / totalAttempts : 0;
+      return {
+        ...player,
+        total_score: totalScore,
+        totalScore,
+        combined_accuracy: combinedAccuracy,
+        combinedAccuracy,
+        score: totalScore,
+        accuracy: combinedAccuracy,
+      };
+    })
+    .sort((a, b) => (b.total_score - a.total_score) || (b.combined_accuracy - a.combined_accuracy));
+};
+export const mergeStudentGameBreakdowns = (wisdomStudents = [], crosswordStudents = []) => {
+  const merged = new Map();
+  wisdomStudents.forEach((student) => {
+    const key = getPlayerKey(student);
+    if (key === null || key === undefined) return;
+    merged.set(key, {
+      ...student,
+      id: student.id ?? student.user_id ?? null,
+      user_id: student.user_id ?? student.id ?? null,
+      name: student.name || student.display_name || '',
+      display_name: student.display_name || student.name || '',
+      wisdomScore: toNumber(student.wisdomScore ?? student.totalScore ?? student.score),
+      wisdomGames: toNumber(student.wisdomGames ?? student.gamesPlayed ?? student.attempted),
+      wisdomCorrect: toNumber(student.wisdomCorrect ?? student.correct_answers ?? student.correct),
+      wisdomAccuracy: toNumber(student.wisdomAccuracy ?? student.accuracy),
+      crosswordScore: 0,
+      crosswordGames: 0,
+      crosswordCorrect: 0,
+      crosswordAccuracy: 0,
+    });
+  });
+  crosswordStudents.forEach((student) => {
+    const key = getPlayerKey(student);
+    if (key === null || key === undefined) return;
+    const existing = merged.get(key) || {
+      id: student.id ?? student.user_id ?? null,
+      user_id: student.user_id ?? student.id ?? null,
+      name: student.name || student.display_name || '',
+      display_name: student.display_name || student.name || '',
+      email: student.email || '',
+      attempted: 0,
+      correct: 0,
+      wrong: 0,
+      gamesPlayed: 0,
+      avgTime: 0,
+      wisdomScore: 0,
+      wisdomGames: 0,
+      wisdomCorrect: 0,
+      wisdomAccuracy: 0,
+    };
+    existing.email = existing.email || student.email || '';
+    existing.crosswordScore = toNumber(student.crosswordScore ?? student.score ?? student.totalScore);
+    existing.crosswordGames = toNumber(student.crosswordGames ?? student.gamesPlayed ?? student.attempts);
+    existing.crosswordCorrect = toNumber(student.crosswordCorrect ?? student.correct_answers ?? student.correct);
+    existing.crosswordAccuracy = toNumber(student.crosswordAccuracy ?? student.accuracy);
+    merged.set(key, existing);
+  });
+  return Array.from(merged.values())
+    .map((student) => {
+      const totalGames = student.wisdomGames + student.crosswordGames;
+      const totalCorrect = student.wisdomCorrect + student.crosswordCorrect;
+      const totalAttempts = toNumber(student.attempted) + student.crosswordGames;
+      const totalScore = student.wisdomScore + student.crosswordScore;
+      const combinedAccuracy = totalGames > 0
+        ? ((student.wisdomAccuracy * student.wisdomGames) + (student.crosswordAccuracy * student.crosswordGames)) / totalGames
+        : 0;
+      return {
+        ...student,
+        totalGames,
+        totalScore,
+        combinedAccuracy,
+        accuracy: combinedAccuracy,
+      };
+    })
+    .sort((a, b) => (b.totalScore - a.totalScore) || (b.combinedAccuracy - a.combinedAccuracy));
+};
 
 // ============================================
 // BACKWARD COMPATIBILITY ALIASES
@@ -195,7 +335,9 @@ export default {
   parseCSV,
   safeJSONParse,
   formatDate,
-  generateId
+  generateId,
+  mergeGameLeaderboards,
+  mergeStudentGameBreakdowns
 };
 
 // Option 2: Create aliases for backward compatibility

@@ -1,7 +1,7 @@
 // crosswordteacher.js
 import React, { useState, useEffect } from "react";
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 /* ----------------------------------------------------
    CROSSWORD MODALS & COMPONENTS
@@ -250,18 +250,18 @@ export function ViewCrosswordQuestionsModal({ questions, onClose, onEdit, onDele
    CROSSWORD UTILITY FUNCTIONS
    ---------------------------------------------------- */
 
-export async function startCrosswordGame(questions) {
+export async function startCrosswordGame(gameCode) {
   try {
-    if (!Array.isArray(questions) || questions.length === 0) {
-      throw new Error("No crossword questions available");
+    if (!gameCode) {
+      throw new Error("No crossword game code available");
     }
 
-    console.log(`🎮 Starting crossword game with ${questions.length} questions`);
+    console.log(`🎮 Starting crossword game for code ${gameCode}`);
 
     const res = await fetch(`${API_BASE}/crossword/start-game`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ questions }),
+      body: JSON.stringify({ game_code: gameCode }),
     });
 
     const data = await res.json();
@@ -271,7 +271,11 @@ export async function startCrosswordGame(questions) {
     }
 
     console.log("✅ Crossword game started successfully");
-    return data;
+    return {
+      ...data,
+      gridSize: Number(data.gridSize ?? data.grid_size ?? 0),
+      totalWords: Number(data.totalWords ?? data.total_words ?? data.words ?? 0),
+    };
   } catch (error) {
     console.error("Error starting crossword game:", error);
     throw error;

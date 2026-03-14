@@ -35,13 +35,16 @@ async function fetchCrosswordQuestions(count = 15) {
     }
     
     console.log(`Fetched ${rows.length} crossword questions from database`);
-    return rows.map(row => ({
-      id: row.id,
-      question: row.question,
-      answer: row.answer.toUpperCase().replace(/[^A-Z]/g, '').trim(),
-      difficulty: row.difficulty || 'Medium',
-      length: row.answer.length
-    }));
+    return rows.map(row => {
+      const normalizedAnswer = row.answer.toUpperCase().replace(/[^A-Z]/g, '').trim();
+      return {
+        id: row.id,
+        question: row.question,
+        answer: normalizedAnswer,
+        difficulty: row.difficulty || 'Medium',
+        length: normalizedAnswer.length
+      };
+    });
     
   } catch (error) {
     console.error('Error fetching crossword questions:', error);
@@ -69,492 +72,351 @@ function getFallbackQuestions() {
   ];
 }
 
-// SUPER ADVANCED CROSSWORD GENERATOR - WILL PLACE ALL WORDS
 class PerfectCrosswordGenerator {
-  constructor(questions) {
-    this.questions = questions;
-    this.gridSize = 15; // Fixed size for consistency
-    this.grid = Array(this.gridSize).fill().map(() => Array(this.gridSize).fill('#'));
-    this.letters = Array(this.gridSize).fill().map(() => Array(this.gridSize).fill(''));
+  constructor(questions, gridSize = 15) {
+    this.questions = this.prepareQuestions(questions);
+    this.gridSize = gridSize;
+    this.resetBoard();
+  }
+
+  prepareQuestions(questions) {
+    const uniqueAnswers = new Set();
+
+    return (Array.isArray(questions) ? questions : [])
+      .map((question) => {
+        const answer = String(question?.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+        return {
+          id: question?.id,
+          question: question?.question,
+          answer,
+          difficulty: question?.difficulty || 'Medium',
+          length: answer.length,
+        };
+      })
+      .filter((question) => {
+        if (!question.id || !question.question || !question.answer || question.length < 2) {
+          return false;
+        }
+
+        if (uniqueAnswers.has(question.answer)) {
+          return false;
+        }
+
+        uniqueAnswers.add(question.answer);
+        return true;
+      });
+  }
+
+  resetBoard() {
+    this.grid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill('#'));
+    this.letters = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(''));
     this.placedWords = [];
     this.clues = { across: [], down: [] };
     this.cellNumbers = {};
     this.nextNumber = 1;
   }
-  
+
+  shuffleQuestions() {
+    const shuffled = [...this.questions];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    shuffled.sort((left, right) => right.length - left.length);
+    return shuffled;
+  }
+
   generate() {
     console.log(`Generating ${this.gridSize}x${this.gridSize} crossword with ${this.questions.length} questions`);
-    
-    // Sort by length and then alphabetically for consistency
-    this.questions.sort((a, b) => {
-      if (b.length !== a.length) return b.length - a.length;
-      return a.answer.localeCompare(b.answer);
-    });
-    
-    // Create a central anchor word (longest)
-    const anchor = this.questions[0];
-    const centerRow = Math.floor(this.gridSize / 2);
-    const startCol = Math.max(3, Math.floor((this.gridSize - anchor.length) / 2));
-    
-    this.placeWord(anchor, centerRow, startCol, 'across');
-    
-    // Group remaining words by their letters for better intersection matching
-    const letterMap = this.createLetterMap();
-    
-    // Try to place all remaining words with smart intersection
-    for (let i = 1; i < this.questions.length; i++) {
-      const word = this.questions[i];
-      if (!this.smartPlaceWord(word, letterMap)) {
-        // Try brute force placement
-        this.bruteForcePlaceWord(word);
+
+    if (!this.questions.length) {
+      return this.getResult();
+    }
+
+    let bestSnapshot = null;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      this.resetBoard();
+      const orderedQuestions = this.shuffleQuestions();
+      this.buildBoard(orderedQuestions, attempt);
+      const snapshot = this.createSnapshot();
+
+      if (!bestSnapshot || snapshot.score > bestSnapshot.score) {
+        bestSnapshot = snapshot;
+      }
+
+      if (snapshot.placedCount === orderedQuestions.length && snapshot.intersections > 0) {
+        break;
       }
     }
-    
-    // Try to connect any isolated words
-    this.connectIsolatedWords();
-    
+
+    if (bestSnapshot) {
+      this.restoreSnapshot(bestSnapshot);
+    }
+
     return this.getResult();
   }
-  
-  createLetterMap() {
-    const map = {};
-    for (const word of this.questions) {
-      for (let i = 0; i < word.answer.length; i++) {
-        const letter = word.answer[i];
-        if (!map[letter]) map[letter] = [];
-        map[letter].push({ word: word.answer, position: i });
+
+  buildBoard(orderedQuestions, attemptSeed) {
+    const firstWordPool = orderedQuestions.slice(0, Math.min(4, orderedQuestions.length));
+    const anchorWord = firstWordPool[attemptSeed % firstWordPool.length] || orderedQuestions[0];
+    const anchorDirection = attemptSeed % 2 === 0 ? 'across' : 'down';
+
+    const centerRow = Math.floor(this.gridSize / 2);
+    const centerCol = Math.floor(this.gridSize / 2);
+    const anchorRow = anchorDirection === 'across'
+      ? centerRow
+      : Math.max(0, centerRow - Math.floor(anchorWord.length / 2));
+    const anchorCol = anchorDirection === 'across'
+      ? Math.max(0, centerCol - Math.floor(anchorWord.length / 2))
+      : centerCol;
+
+    this.placeWord(anchorWord, anchorRow, anchorCol, anchorDirection);
+
+    for (const word of orderedQuestions) {
+      if (word.id === anchorWord.id) {
+        continue;
       }
+
+      const placements = this.findPlacements(word);
+      if (!placements.length) {
+        continue;
+      }
+
+      const topPlacements = placements.slice(0, Math.min(5, placements.length));
+      const selectedPlacement = topPlacements[Math.floor(Math.random() * topPlacements.length)];
+      this.placeWord(word, selectedPlacement.row, selectedPlacement.col, selectedPlacement.direction);
     }
-    return map;
   }
-  
-  smartPlaceWord(word, letterMap) {
-    // Try to find best intersection point
-    const potentialPlaces = [];
-    
-    for (let i = 0; i < word.answer.length; i++) {
-      const letter = word.answer[i];
-      const matchingLetters = letterMap[letter] || [];
-      
-      for (const match of matchingLetters) {
-        // Find this letter in placed words
-        for (const placed of this.placedWords) {
-          for (let j = 0; j < placed.answer.length; j++) {
-            if (placed.answer[j] === letter) {
-              // Calculate potential placement
-              let row, col, direction;
-              
-              if (placed.direction === 'across') {
-                // Place vertically through this point
-                row = placed.row - i;
-                col = placed.col + j;
-                direction = 'down';
-              } else {
-                // Place horizontally through this point
-                row = placed.row + j;
-                col = placed.col - i;
-                direction = 'across';
-              }
-              
-              if (this.canPlaceWord(word, row, col, direction, i, letter)) {
-                potentialPlaces.push({ row, col, direction, score: this.calculatePlacementScore(row, col, direction) });
-              }
-            }
-          }
+
+  hasLetter(row, col) {
+    return row >= 0 && row < this.gridSize && col >= 0 && col < this.gridSize && this.letters[row][col] !== '';
+  }
+
+  canPlaceWord(word, row, col, direction, requireIntersection) {
+    const isAcross = direction === 'across';
+    let intersections = 0;
+
+    if (isAcross) {
+      if (row < 0 || row >= this.gridSize || col < 0 || col + word.length > this.gridSize) {
+        return null;
+      }
+    } else if (row < 0 || row + word.length > this.gridSize || col < 0 || col >= this.gridSize) {
+      return null;
+    }
+
+    for (let index = 0; index < word.length; index++) {
+      const cellRow = isAcross ? row : row + index;
+      const cellCol = isAcross ? col + index : col;
+      const existingLetter = this.letters[cellRow][cellCol];
+      const targetLetter = word.answer[index];
+
+      if (existingLetter) {
+        if (existingLetter !== targetLetter) {
+          return null;
         }
+        intersections += 1;
+        continue;
+      }
+
+      if (isAcross) {
+        if (this.hasLetter(cellRow - 1, cellCol) || this.hasLetter(cellRow + 1, cellCol)) {
+          return null;
+        }
+      } else if (this.hasLetter(cellRow, cellCol - 1) || this.hasLetter(cellRow, cellCol + 1)) {
+        return null;
       }
     }
-    
-    // Choose the best placement
-    if (potentialPlaces.length > 0) {
-      potentialPlaces.sort((a, b) => b.score - a.score);
-      const best = potentialPlaces[0];
-      this.placeWord(word, best.row, best.col, best.direction);
-      return true;
+
+    const beforeRow = isAcross ? row : row - 1;
+    const beforeCol = isAcross ? col - 1 : col;
+    const afterRow = isAcross ? row : row + word.length;
+    const afterCol = isAcross ? col + word.length : col;
+
+    if (this.hasLetter(beforeRow, beforeCol) || this.hasLetter(afterRow, afterCol)) {
+      return null;
     }
-    
-    return false;
+
+    if (requireIntersection && intersections === 0) {
+      return null;
+    }
+
+    if (intersections === word.length) {
+      return null;
+    }
+
+    return { intersections };
   }
-  
-  bruteForcePlaceWord(word) {
-    // Try ALL possible positions (within reason)
-    const attempts = [];
-    
+
+  findPlacements(word) {
+    const requireIntersection = this.placedWords.length > 0;
+    const placements = [];
+    const center = Math.floor(this.gridSize / 2);
+
     for (let row = 0; row < this.gridSize; row++) {
       for (let col = 0; col < this.gridSize; col++) {
-        // Try across
-        if (this.canPlaceWord(word, row, col, 'across')) {
-          attempts.push({ row, col, direction: 'across', score: this.calculatePlacementScore(row, col, 'across') });
-        }
-        
-        // Try down
-        if (this.canPlaceWord(word, row, col, 'down')) {
-          attempts.push({ row, col, direction: 'down', score: this.calculatePlacementScore(row, col, 'down') });
-        }
-      }
-    }
-    
-    if (attempts.length > 0) {
-      attempts.sort((a, b) => b.score - a.score);
-      const best = attempts[0];
-      this.placeWord(word, best.row, best.col, best.direction);
-      return true;
-    }
-    
-    // Last resort: try extending grid
-    return this.tryExtremePlacement(word);
-  }
-  
-  tryExtremePlacement(word) {
-    // Try to attach to ends of existing words
-    for (const placed of this.placedWords) {
-      if (placed.direction === 'across') {
-        // Try before
-        if (this.canPlaceWord(word, placed.row, placed.col - word.length, 'across')) {
-          this.placeWord(word, placed.row, placed.col - word.length, 'across');
-          return true;
-        }
-        // Try after
-        if (this.canPlaceWord(word, placed.row, placed.col + placed.length, 'across')) {
-          this.placeWord(word, placed.row, placed.col + placed.length, 'across');
-          return true;
-        }
-      } else {
-        // Try above
-        if (this.canPlaceWord(word, placed.row - word.length, placed.col, 'down')) {
-          this.placeWord(word, placed.row - word.length, placed.col, 'down');
-          return true;
-        }
-        // Try below
-        if (this.canPlaceWord(word, placed.row + placed.length, placed.col, 'down')) {
-          this.placeWord(word, placed.row + placed.length, placed.col, 'down');
-          return true;
-        }
-      }
-    }
-    
-    return false;
-  }
-  
-  connectIsolatedWords() {
-    // Find words with no intersections
-    const isolated = [];
-    for (let i = 0; i < this.placedWords.length; i++) {
-      let hasIntersection = false;
-      for (let j = 0; j < this.placedWords.length; j++) {
-        if (i !== j && this.wordsIntersect(this.placedWords[i], this.placedWords[j])) {
-          hasIntersection = true;
-          break;
-        }
-      }
-      if (!hasIntersection) {
-        isolated.push(this.placedWords[i]);
-      }
-    }
-    
-    // Try to add connecting words
-    for (const word of isolated) {
-      this.tryAddConnector(word);
-    }
-  }
-  
-  tryAddConnector(isolatedWord) {
-    // Try to create a bridge to another word
-    for (const otherWord of this.placedWords) {
-      if (otherWord === isolatedWord) continue;
-      
-      // Try to find a letter that appears in both words
-      for (let i = 0; i < isolatedWord.answer.length; i++) {
-        const letter = isolatedWord.answer[i];
-        const posInOther = otherWord.answer.indexOf(letter);
-        
-        if (posInOther !== -1) {
-          // Calculate where a connecting word could go
-          let connectRow, connectCol;
-          
-          if (isolatedWord.direction === 'across') {
-            // Isolated word is horizontal
-            const isoCol = isolatedWord.col + i;
-            const isoRow = isolatedWord.row;
-            
-            if (otherWord.direction === 'across') {
-              // Both horizontal - need vertical connector
-              connectRow = Math.min(isoRow, otherWord.row);
-              connectCol = isoCol;
-              
-              // Create a vertical word connecting them
-              const connectLength = Math.abs(otherWord.row - isoRow) + 1;
-              if (this.isValidForConnection(connectRow, connectCol, 'down', connectLength)) {
-                // Add placeholder connecting word
-                this.addConnectingWord(connectRow, connectCol, 'down', connectLength, letter);
-                return true;
-              }
-            } else {
-              // Other word is vertical
-              const otherCol = otherWord.col;
-              const otherRow = otherWord.row + posInOther;
-              
-              if (isoCol === otherCol) {
-                // They already intersect!
-                return true;
-              }
-            }
+        for (const direction of ['across', 'down']) {
+          const validation = this.canPlaceWord(word, row, col, direction, requireIntersection);
+          if (!validation) {
+            continue;
           }
+
+          const distanceFromCenter = Math.abs(row - center) + Math.abs(col - center);
+          const score = validation.intersections * 100 - distanceFromCenter;
+          placements.push({ row, col, direction, score, intersections: validation.intersections });
         }
       }
     }
-    
-    return false;
+
+    placements.sort((left, right) => right.score - left.score);
+    return placements;
   }
-  
-  calculatePlacementScore(row, col, direction) {
-    let score = 0;
-    
-    // Prefer center of grid
-    const center = Math.floor(this.gridSize / 2);
-    const distanceFromCenter = Math.abs(row - center) + Math.abs(col - center);
-    score += (this.gridSize - distanceFromCenter) * 2;
-    
-    // Prefer creating intersections
-    if (this.wouldCreateIntersection(row, col, direction)) {
-      score += 50;
-    }
-    
-    // Prefer connections to existing words
-    score += this.countAdjacentWords(row, col, direction) * 20;
-    
-    return score;
-  }
-  
-  wouldCreateIntersection(row, col, direction) {
-    // Check if placement would create future intersection opportunities
-    return true; // Simplified
-  }
-  
-  countAdjacentWords(row, col, direction) {
-    let count = 0;
-    const word = this.questions.find(q => true); // Placeholder
-    
-    for (let i = 0; i < (word?.length || 5); i++) {
-      let r, c;
-      if (direction === 'across') {
-        r = row;
-        c = col + i;
-      } else {
-        r = row + i;
-        c = col;
-      }
-      
-      // Check all four directions
-      const neighbors = [
-        [r-1, c], [r+1, c], [r, c-1], [r, c+1]
-      ];
-      
-      for (const [nr, nc] of neighbors) {
-        if (nr >= 0 && nr < this.gridSize && nc >= 0 && nc < this.gridSize) {
-          if (this.letters[nr][nc] !== '') {
-            count++;
-          }
-        }
-      }
-    }
-    
-    return count;
-  }
-  
-  canPlaceWord(word, row, col, direction, intersectPos = -1, intersectLetter = '') {
-    // Check boundaries
-    if (direction === 'across') {
-      if (col < 0 || col + word.length > this.gridSize) return false;
-      if (row < 0 || row >= this.gridSize) return false;
-    } else {
-      if (row < 0 || row + word.length > this.gridSize) return false;
-      if (col < 0 || col >= this.gridSize) return false;
-    }
-    
-    // Check each cell
-    for (let i = 0; i < word.length; i++) {
-      let cellRow, cellCol;
-      
-      if (direction === 'across') {
-        cellRow = row;
-        cellCol = col + i;
-      } else {
-        cellRow = row + i;
-        cellCol = col;
-      }
-      
-      const currentLetter = this.letters[cellRow][cellCol];
-      
-      // If cell already has a letter
-      if (currentLetter !== '') {
-        // Must match if it's the intersection point
-        if (i === intersectPos) {
-          if (currentLetter !== intersectLetter) return false;
-        } else {
-          // Non-intersection cells must be empty
-          return false;
-        }
-      }
-      
-      // Check crossword rules for non-intersection cells
-      if (i !== intersectPos) {
-        // Must have empty cells perpendicular to word direction
-        if (direction === 'across') {
-          if (cellRow > 0 && this.grid[cellRow - 1][cellCol] === ' ') return false;
-          if (cellRow < this.gridSize - 1 && this.grid[cellRow + 1][cellCol] === ' ') return false;
-        } else {
-          if (cellCol > 0 && this.grid[cellRow][cellCol - 1] === ' ') return false;
-          if (cellCol < this.gridSize - 1 && this.grid[cellRow][cellCol + 1] === ' ') return false;
-        }
-      }
-    }
-    
-    // Check ends of word
-    if (direction === 'across') {
-      if (col > 0 && this.grid[row][col - 1] === ' ') return false;
-      if (col + word.length < this.gridSize && this.grid[row][col + word.length] === ' ') return false;
-    } else {
-      if (row > 0 && this.grid[row - 1][col] === ' ') return false;
-      if (row + word.length < this.gridSize && this.grid[row + word.length][col] === ' ') return false;
-    }
-    
-    return true;
-  }
-  
+
   placeWord(word, row, col, direction) {
-    // Mark cells as empty and store letters
-    for (let i = 0; i < word.length; i++) {
-      if (direction === 'across') {
-        this.grid[row][col + i] = ' ';
-        this.letters[row][col + i] = word.answer[i];
-      } else {
-        this.grid[row + i][col] = ' ';
-        this.letters[row + i][col] = word.answer[i];
-      }
+    const isAcross = direction === 'across';
+
+    for (let index = 0; index < word.length; index++) {
+      const cellRow = isAcross ? row : row + index;
+      const cellCol = isAcross ? col + index : col;
+      this.grid[cellRow][cellCol] = ' ';
+      this.letters[cellRow][cellCol] = word.answer[index];
     }
-    
-    // Number the starting cell
-    const cellId = `${row}-${col}`;
-    if (!this.cellNumbers[cellId]) {
-      this.cellNumbers[cellId] = this.nextNumber;
-      this.nextNumber++;
-    }
-    
-    const clueData = {
-      id: word.id,
-      number: this.cellNumbers[cellId],
-      clue: word.question,
-      answer: word.answer,
-      length: word.length,
-      direction: direction,
-      startRow: row,
-      startCol: col,
-      difficulty: word.difficulty
-    };
-    
-    if (direction === 'across') {
-      this.clues.across.push(clueData);
-    } else {
-      this.clues.down.push(clueData);
-    }
-    
+
     this.placedWords.push({
       id: word.id,
+      question: word.question,
       answer: word.answer,
-      row: row,
-      col: col,
-      direction: direction,
-      length: word.length
+      difficulty: word.difficulty,
+      row,
+      col,
+      direction,
+      length: word.length,
     });
-    
+
     return true;
   }
-  
-  addConnectingWord(row, col, direction, length, letter) {
-    // Add a placeholder connecting word
-    for (let i = 0; i < length; i++) {
-      if (direction === 'across') {
-        this.grid[row][col + i] = ' ';
-        this.letters[row][col + i] = i === 0 ? letter : '?';
-      } else {
-        this.grid[row + i][col] = ' ';
-        this.letters[row + i][col] = i === 0 ? letter : '?';
-      }
-    }
+
+  createSnapshot() {
+    const numbered = this.buildNumberedClues();
+    const intersections = this.countIntersections();
+    const score = this.placedWords.length * 1000 + intersections * 100;
+
+    return {
+      grid: this.grid.map((row) => [...row]),
+      letters: this.letters.map((row) => [...row]),
+      placedWords: this.placedWords.map((word) => ({ ...word })),
+      clues: {
+        across: numbered.across.map((clue) => ({ ...clue })),
+        down: numbered.down.map((clue) => ({ ...clue })),
+      },
+      cellNumbers: { ...this.cellNumbers },
+      nextNumber: this.nextNumber,
+      intersections,
+      placedCount: this.placedWords.length,
+      score,
+    };
   }
-  
-  wordsIntersect(word1, word2) {
-    if (word1.direction === word2.direction) return false;
-    
-    if (word1.direction === 'across') {
-      // word1 horizontal, word2 vertical
-      return word2.col >= word1.col && 
-             word2.col < word1.col + word1.length &&
-             word1.row >= word2.row && 
-             word1.row < word2.row + word2.length;
-    } else {
-      // word1 vertical, word2 horizontal
-      return word1.col >= word2.col && 
-             word1.col < word2.col + word2.length &&
-             word2.row >= word1.row && 
-             word2.row < word1.row + word1.length;
-    }
+
+  restoreSnapshot(snapshot) {
+    this.grid = snapshot.grid.map((row) => [...row]);
+    this.letters = snapshot.letters.map((row) => [...row]);
+    this.placedWords = snapshot.placedWords.map((word) => ({ ...word }));
+    this.clues = {
+      across: snapshot.clues.across.map((clue) => ({ ...clue })),
+      down: snapshot.clues.down.map((clue) => ({ ...clue })),
+    };
+    this.cellNumbers = { ...snapshot.cellNumbers };
+    this.nextNumber = snapshot.nextNumber;
   }
-  
-  isValidForConnection(row, col, direction, length) {
-    if (direction === 'across') {
-      if (col < 0 || col + length > this.gridSize) return false;
-      if (row < 0 || row >= this.gridSize) return false;
-    } else {
-      if (row < 0 || row + length > this.gridSize) return false;
-      if (col < 0 || col >= this.gridSize) return false;
-    }
-    
-    // Check if path is clear
-    for (let i = 0; i < length; i++) {
-      let r, c;
-      if (direction === 'across') {
-        r = row;
-        c = col + i;
-      } else {
-        r = row + i;
-        c = col;
-      }
-      
-      if (this.grid[r][c] === ' ' && this.letters[r][c] !== '?') {
-        return false;
-      }
-    }
-    
-    return true;
-  }
-  
-  getResult() {
-    // Sort clues by number
-    this.clues.across.sort((a, b) => a.number - b.number);
-    this.clues.down.sort((a, b) => a.number - b.number);
-    
-    // Calculate statistics
-    const emptyCells = this.grid.flat().filter(cell => cell === ' ').length;
-    const totalCells = this.gridSize * this.gridSize;
-    const density = (emptyCells / totalCells * 100).toFixed(1);
-    
-    // Calculate intersections
+
+  countIntersections() {
     let intersections = 0;
-    for (let i = 0; i < this.placedWords.length; i++) {
-      for (let j = i + 1; j < this.placedWords.length; j++) {
-        if (this.wordsIntersect(this.placedWords[i], this.placedWords[j])) {
-          intersections++;
+
+    for (let row = 0; row < this.gridSize; row++) {
+      for (let col = 0; col < this.gridSize; col++) {
+        if (!this.letters[row][col]) {
+          continue;
+        }
+
+        const horizontal = this.hasLetter(row, col - 1) || this.hasLetter(row, col + 1);
+        const vertical = this.hasLetter(row - 1, col) || this.hasLetter(row + 1, col);
+        if (horizontal && vertical) {
+          intersections += 1;
         }
       }
     }
-    
+
+    return intersections;
+  }
+
+  buildNumberedClues() {
+    this.cellNumbers = {};
+    this.nextNumber = 1;
+
+    const byPosition = new Map();
+    for (const placedWord of this.placedWords) {
+      byPosition.set(`${placedWord.row}-${placedWord.col}-${placedWord.direction}`, placedWord);
+    }
+
+    for (let row = 0; row < this.gridSize; row++) {
+      for (let col = 0; col < this.gridSize; col++) {
+        if (!this.letters[row][col]) {
+          continue;
+        }
+
+        const startsAcross = this.hasLetter(row, col) && !this.hasLetter(row, col - 1) && this.hasLetter(row, col + 1);
+        const startsDown = this.hasLetter(row, col) && !this.hasLetter(row - 1, col) && this.hasLetter(row + 1, col);
+        if (startsAcross || startsDown) {
+          this.cellNumbers[`${row}-${col}`] = this.nextNumber;
+          this.nextNumber += 1;
+        }
+      }
+    }
+
+    const across = [];
+    const down = [];
+
+    for (const placedWord of this.placedWords) {
+      const clue = {
+        id: placedWord.id,
+        number: this.cellNumbers[`${placedWord.row}-${placedWord.col}`],
+        clue: placedWord.question,
+        answer: placedWord.answer,
+        length: placedWord.length,
+        direction: placedWord.direction,
+        startRow: placedWord.row,
+        startCol: placedWord.col,
+        difficulty: placedWord.difficulty,
+      };
+
+      if (placedWord.direction === 'across') {
+        across.push(clue);
+      } else {
+        down.push(clue);
+      }
+    }
+
+    across.sort((left, right) => left.number - right.number);
+    down.sort((left, right) => left.number - right.number);
+    this.clues = { across, down };
+
+    return this.clues;
+  }
+
+  getResult() {
+    this.buildNumberedClues();
+
+    const emptyCells = this.grid.flat().filter((cell) => cell === ' ').length;
+    const totalCells = this.gridSize * this.gridSize;
+    const density = (emptyCells / totalCells * 100).toFixed(1);
+    const intersections = this.countIntersections();
+
     console.log(`✅ Placed ${this.placedWords.length}/${this.questions.length} words`);
     console.log(`🔗 ${intersections} intersections created`);
     console.log(`📊 Grid density: ${density}%`);
     console.log(`➡️ Across: ${this.clues.across.length}, ⬇️ Down: ${this.clues.down.length}`);
-    
+
     return {
       success: this.placedWords.length > 0,
       grid: this.grid,
@@ -564,10 +426,10 @@ class PerfectCrosswordGenerator {
       cellNumbers: this.cellNumbers,
       gridSize: this.gridSize,
       placedCount: this.placedWords.length,
-      density: density,
-      intersections: intersections,
-      title: "COMPILER DESIGN CROSSWORD",
-      academyName: "Three Valley Academy"
+      density,
+      intersections,
+      title: 'COMPILER DESIGN CROSSWORD',
+      academyName: 'Three Valley Academy'
     };
   }
 }

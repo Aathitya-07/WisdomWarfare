@@ -3,7 +3,8 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { io } from "socket.io-client";
-import { formatAccuracy, formatScore } from "./utils/helpers";import {
+import { formatAccuracy, formatScore, mergeGameLeaderboards } from "./utils/helpers";
+import {
   AddOrEditCrosswordModal,
   UploadCrosswordQsModal,
   ViewCrosswordQuestionsModal,
@@ -16,6 +17,7 @@ import { formatAccuracy, formatScore } from "./utils/helpers";import {
 
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const CROSSWORD_API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 /* ----------------------------------------------------
    SHARED MODALS & UI COMPONENTS
@@ -1109,7 +1111,7 @@ function TeacherGameManagementPage() {
   const fetchCrosswordQuestions = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/crossword/questions`);
+      const res = await fetch(`${CROSSWORD_API_BASE}/crossword/questions`);
       const data = await res.json();
       
       if (Array.isArray(data)) {
@@ -1140,7 +1142,7 @@ function TeacherGameManagementPage() {
     );
 
     try {
-      const res = await fetch(`${API_BASE}/crossword/questions/${id}`, {
+      const res = await fetch(`${CROSSWORD_API_BASE}/crossword/questions/${id}`, {
         method: "DELETE",
       });
 
@@ -1158,7 +1160,7 @@ function TeacherGameManagementPage() {
   const fetchCrosswordRanks = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/crossword/leaderboard`);
+      const res = await fetch(`${CROSSWORD_API_BASE}/crossword/leaderboard`);
       const data = await res.json();
       setCrosswordRanks(data || []);
     } catch (error) {
@@ -1170,7 +1172,7 @@ function TeacherGameManagementPage() {
 
   const downloadCrosswordResults = async () => {
     try {
-      const res = await fetch(`${API_BASE}/crossword/download-results`);
+      const res = await fetch(`${CROSSWORD_API_BASE}/crossword/download-results`);
       if (!res.ok) {
         alert("Failed to download crossword results");
         return;
@@ -1248,23 +1250,16 @@ function TeacherGameManagementPage() {
   const fetchLeaderboard = async () => {
     try {
       setTopPlayersLoading(true);
-      const res = await fetch(`${API_BASE}/leaderboard/global?limit=50`);
-      if (!res.ok) throw new Error("Failed to fetch leaderboard");
-      let data;
-      try {
-        data = await res.json();
-      } catch (e) {
-        throw new Error(
-          `Unexpected server response while fetching leaderboard (HTTP ${res.status})`
-        );
-      }
-      // Format the data to use total_score and combined_accuracy for display
-      const formattedData = (data || []).map(player => ({
-        ...player,
-        score: player.total_score || player.score || 0,
-        accuracy: player.combined_accuracy || player.accuracy || 0
-      }));
-      setTopPlayers(formattedData);
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/leaderboard/wisdom-warfare?limit=50`),
+        fetch(`${CROSSWORD_API_BASE}/leaderboard/crossword?limit=50`),
+      ]);
+      if (!wisdomRes.ok || !crosswordRes.ok) throw new Error("Failed to fetch leaderboard");
+      const [wisdomData, crosswordData] = await Promise.all([
+        wisdomRes.json(),
+        crosswordRes.json(),
+      ]);
+      setTopPlayers(mergeGameLeaderboards(wisdomData || [], crosswordData || []));
     } catch (error) {
       console.error("Error fetching leaderboard:", error);
     } finally {
@@ -1441,9 +1436,14 @@ function TeacherGameManagementPage() {
     try {
       setSendingLink(true);
 
-      const lookupRes = await fetch(
+      let lookupRes = await fetch(
         `${API_BASE}/game/code/${encodeURIComponent(gameCode)}`
       );
+      if (!lookupRes.ok && lookupRes.status === 404) {
+        lookupRes = await fetch(
+          `${CROSSWORD_API_BASE}/game/code/${encodeURIComponent(gameCode)}`
+        );
+      }
       if (!lookupRes.ok) {
         const txt = await lookupRes.text().catch(() => "");
         throw new Error(`Game lookup failed: ${lookupRes.status} ${txt}`);
@@ -1523,7 +1523,12 @@ function TeacherGameManagementPage() {
         game_type: game_type
       };
 
-      const res = await fetch(`${API_BASE}/teacher/games`, {
+      const endpoint =
+        selectedGameName === "A. Crossword"
+          ? `${CROSSWORD_API_BASE}/crossword/create-game`
+          : `${API_BASE}/teacher/games`;
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1576,7 +1581,7 @@ function TeacherGameManagementPage() {
       if (gameName === "A. Crossword") {
         console.log("🎮 Starting Crossword game...");
         
-        const questionsRes = await fetch(`${API_BASE}/crossword/questions`);
+        const questionsRes = await fetch(`${CROSSWORD_API_BASE}/crossword/questions`);
         const questionsData = await questionsRes.json();
         const crosswordQuestions = Array.isArray(questionsData) 
           ? questionsData 
@@ -1589,7 +1594,7 @@ function TeacherGameManagementPage() {
         }
 
         // Use the new startCrosswordGame function
-        const gameResult = await startCrosswordGameAPI(crosswordQuestions);
+        const gameResult = await startCrosswordGameAPI(gameCode);
         
         alert(`✅ Crossword game started successfully!\n📊 Grid: ${gameResult.gridSize}x${gameResult.gridSize}\n📝 Words: ${gameResult.totalWords}`);
       } else if (gameName === "Wisdom Warfare") {

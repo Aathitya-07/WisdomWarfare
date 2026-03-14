@@ -10,7 +10,6 @@ const fs = require("fs");
 const path = require("path");
 const fetch = require("node-fetch");
 const nodemailer = require("nodemailer");
-const { generateCrosswordGrid, fetchCrosswordQuestions } = require("./crosswordgenerate");
 
 const app = express();
 
@@ -128,15 +127,6 @@ function initGameState(gameCode) {
   }
   return gameStates.get(gameCode);
 }
-
-// ----- Crossword Game State -----
-let crosswordGameActive = false;
-let crosswordGameSessionId = null;
-let crosswordGrid = null;
-let crosswordClues = null;
-let crosswordPlacedWords = null;
-let currentCrosswordQuestions = [];
-let crosswordAnswers = new Map(); // user_id -> { answers: {}, score: 0 }
 
 // ==========================================
 // ----- HELPERS -----
@@ -851,19 +841,20 @@ app.get("/leaderboard", async (req, res) => {
         u.email, 
         u.display_name, 
         u.role,
-        COALESCE(p.score, 0) as score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) as attempts,
-        COALESCE(p.correct_answers, 0) as correct_answers,
-        CASE 
-          WHEN p.attempts > 0 THEN ROUND((p.correct_answers * 100.0 / p.attempts), 2)
-          ELSE 0 
+        COALESCE(SUM(a.points_earned), 0) as score,
+        COALESCE(COUNT(DISTINCT a.game_session_id), 0) as attempts,
+        COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) as correct_answers,
+        CASE
+          WHEN COUNT(a.answer_id) > 0 THEN ROUND((SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(a.answer_id)), 2)
+          ELSE 0
         END as accuracy
       FROM users u
-      LEFT JOIN performance p ON u.user_id = p.user_id
+      LEFT JOIN answers a ON u.user_id = a.user_id
       WHERE u.email IS NOT NULL 
         AND u.role = 'student'
         AND u.email != ''
-      ORDER BY p.score DESC, accuracy DESC, p.correct_answers DESC
+      GROUP BY u.user_id, u.email, u.display_name, u.role
+      ORDER BY score DESC, accuracy DESC, correct_answers DESC, u.display_name ASC
       LIMIT ?
     `;
 
@@ -886,19 +877,20 @@ app.get("/leaderboard/wisdom-warfare", async (req, res) => {
         u.email, 
         u.display_name, 
         u.role,
-        COALESCE(p.score, 0) as score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) as attempts,
-        COALESCE(p.correct_answers, 0) as correct_answers,
-        CASE 
-          WHEN p.attempts > 0 THEN ROUND((p.correct_answers * 100.0 / p.attempts), 2)
-          ELSE 0 
+        COALESCE(SUM(a.points_earned), 0) as score,
+        COALESCE(COUNT(DISTINCT a.game_session_id), 0) as attempts,
+        COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) as correct_answers,
+        CASE
+          WHEN COUNT(a.answer_id) > 0 THEN ROUND((SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(a.answer_id)), 2)
+          ELSE 0
         END as accuracy
       FROM users u
-      LEFT JOIN performance p ON u.user_id = p.user_id
+      LEFT JOIN answers a ON u.user_id = a.user_id
       WHERE u.email IS NOT NULL 
         AND u.role = 'student'
         AND u.email != ''
-      ORDER BY p.score DESC, accuracy DESC, p.correct_answers DESC
+      GROUP BY u.user_id, u.email, u.display_name, u.role
+      ORDER BY score DESC, accuracy DESC, correct_answers DESC, u.display_name ASC
       LIMIT ?
     `;
 
@@ -910,43 +902,7 @@ app.get("/leaderboard/wisdom-warfare", async (req, res) => {
   }
 });
 
-// GET: Crossword Leaderboard
-app.get("/leaderboard/crossword", async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit || "20", 10);
-
-    const sql = `
-      SELECT 
-        u.user_id, 
-        u.email, 
-        u.display_name, 
-        u.role,
-        COALESCE(SUM(cs.score), 0) as score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM crossword_answers WHERE user_id = u.user_id), 0) as attempts,
-        COALESCE(SUM(cs.correct_answers), 0) as correct_answers,
-        CASE 
-          WHEN SUM(cs.attempts) > 0 THEN ROUND((SUM(cs.correct_answers) * 100.0 / SUM(cs.attempts)), 2)
-          ELSE 0 
-        END as accuracy
-      FROM users u
-      LEFT JOIN crossword_scores cs ON u.user_id = cs.user_id
-      WHERE u.email IS NOT NULL 
-        AND u.role = 'student'
-        AND u.email != ''
-      GROUP BY u.user_id, u.email, u.display_name, u.role
-      ORDER BY score DESC, accuracy DESC, correct_answers DESC
-      LIMIT ?
-    `;
-
-    const [rows] = await pool.query(sql, [limit]);
-    res.json(rows);
-  } catch (err) {
-    console.error("GET /leaderboard/crossword error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET: Student's game performance (both game types)
+// GET: Student Wisdom Warfare performance
 app.get("/student/:student_id/game-performance", async (req, res) => {
   try {
     const { student_id } = req.params;
@@ -965,28 +921,8 @@ app.get("/student/:student_id/game-performance", async (req, res) => {
       WHERE p.user_id = ?
     `, [student_id, student_id]);
 
-    // Get Crossword performance  
-    const [crosswordStats] = await pool.query(`
-      SELECT 
-        COALESCE(SUM(cs.score), 0) as score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM crossword_answers WHERE user_id = ?), 0) as attempts,
-        COALESCE(SUM(cs.correct_answers), 0) as correct_answers,
-        CASE 
-          WHEN SUM(cs.attempts) > 0 THEN ROUND((SUM(cs.correct_answers) * 100.0 / SUM(cs.attempts)), 2)
-          ELSE 0 
-        END as accuracy
-      FROM crossword_scores cs
-      WHERE cs.user_id = ?
-    `, [student_id, student_id]);
-
     res.json({
       wisdomWarfare: wisdomWarfareStats[0] || {
-        score: 0,
-        attempts: 0,
-        correct_answers: 0,
-        accuracy: 0
-      },
-      crossword: crosswordStats[0] || {
         score: 0,
         attempts: 0,
         correct_answers: 0,
@@ -999,7 +935,7 @@ app.get("/student/:student_id/game-performance", async (req, res) => {
   }
 });
 
-// GET: Global Leaderboard (Combined scores from both games)
+// GET: Global Leaderboard (Wisdom Warfare data only)
 app.get("/leaderboard/global", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit || "20", 10);
@@ -1010,24 +946,20 @@ app.get("/leaderboard/global", async (req, res) => {
         u.email, 
         u.display_name, 
         u.role,
-        COALESCE(p.score, 0) as wisdom_score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) as wisdom_attempts,
-        COALESCE(SUM(cs.score), 0) as crossword_score,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM crossword_answers WHERE user_id = u.user_id), 0) as crossword_attempts,
-        (COALESCE(p.score, 0) + COALESCE(SUM(cs.score), 0)) as total_score,
-        ROUND(
-          (COALESCE(p.correct_answers, 0) + COALESCE(SUM(cs.correct_answers), 0)) * 100.0 / 
-          NULLIF((COALESCE(p.attempts, 0) + COALESCE(SUM(cs.attempts), 0)), 0), 
-          2
-        ) as combined_accuracy
+        COALESCE(SUM(a.points_earned), 0) as wisdom_score,
+        COALESCE(COUNT(DISTINCT a.game_session_id), 0) as wisdom_attempts,
+        COALESCE(SUM(a.points_earned), 0) as total_score,
+        CASE
+          WHEN COUNT(a.answer_id) > 0 THEN ROUND((SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(a.answer_id)), 2)
+          ELSE 0
+        END as combined_accuracy
       FROM users u
-      LEFT JOIN performance p ON u.user_id = p.user_id
-      LEFT JOIN crossword_scores cs ON u.user_id = cs.user_id
+      LEFT JOIN answers a ON u.user_id = a.user_id
       WHERE u.email IS NOT NULL 
         AND u.role = 'student'
         AND u.email != ''
-      GROUP BY u.user_id, u.email, u.display_name, u.role, p.score, p.attempts, p.correct_answers, p.accuracy
-      ORDER BY total_score DESC, combined_accuracy DESC
+      GROUP BY u.user_id, u.email, u.display_name, u.role
+      ORDER BY total_score DESC, combined_accuracy DESC, u.display_name ASC
       LIMIT ?
     `;
 
@@ -1877,7 +1809,7 @@ app.post("/teacher/games/:id/send-link", async (req, res) => {
 });
 
 // ========== SINGLE GAME CODE VALIDATION ROUTE ==========
-// ✅ FIXED: Game code validation route (works for both Quiz and Crossword)
+// Game code validation route
 app.get("/game/code/:code", async (req, res) => {
   const { code } = req.params;
 
@@ -2157,290 +2089,6 @@ app.post("/admin/cleanup-users", async (req, res) => {
 });
 
 // ==========================================
-// ----- CROSSWORD GAME ENDPOINTS -----
-// ==========================================
-
-// GET: Fetch all crossword questions
-app.get("/crossword/questions", async (req, res) => {
-  try {
-    const questions = await fetchCrosswordQuestions(100);
-    res.json(questions);
-  } catch (err) {
-    console.error("Error fetching crossword questions:", err);
-    res.status(500).json({ error: "Failed to fetch crossword questions" });
-  }
-});
-
-// POST: Add a single crossword question
-app.post("/crossword/questions", async (req, res) => {
-  try {
-    const { question, answer } = req.body;
-    
-    if (!question || !answer) {
-      return res.status(400).json({ error: "Question and answer are required" });
-    }
-
-    const connection = await pool.getConnection();
-    try {
-      const [result] = await connection.query(
-        "INSERT INTO crossword_questions (question, answer, difficulty) VALUES (?, ?, ?)",
-        [question, answer, "Medium"]
-      );
-
-      res.json({
-        id: result.insertId,
-        question,
-        answer,
-        difficulty: "Medium"
-      });
-    } finally {
-      connection.release();
-    }
-  } catch (err) {
-    console.error("Error adding crossword question:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT: Update crossword question
-app.put("/crossword/questions/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { question, answer } = req.body;
-
-    if (!question || !answer) {
-      return res.status(400).json({ error: "Question and answer are required" });
-    }
-
-    const connection = await pool.getConnection();
-    try {
-      await connection.query(
-        "UPDATE crossword_questions SET question = ?, answer = ? WHERE id = ?",
-        [question, answer, id]
-      );
-
-      res.json({ success: true });
-    } finally {
-      connection.release();
-    }
-  } catch (err) {
-    console.error("Error updating crossword question:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE: Remove crossword question
-app.delete("/crossword/questions/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const connection = await pool.getConnection();
-    try {
-      await connection.query("DELETE FROM crossword_questions WHERE id = ?", [id]);
-      res.json({ success: true });
-    } finally {
-      connection.release();
-    }
-  } catch (err) {
-    console.error("Error deleting crossword question:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST: Upload crossword questions via CSV
-app.post("/crossword/questions/upload", upload.single("file"), async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    const results = [];
-    let inserted = 0;
-
-    await connection.beginTransaction();
-
-    const processCSV = () => {
-      return new Promise((resolve, reject) => {
-        fs.createReadStream(req.file.path)
-          .pipe(csv())
-          .on("data", (data) => results.push(data))
-          .on("end", async () => {
-            try {
-              for (const row of results) {
-                const question = row.question || row.Question || row.q;
-                const answer = row.answer || row.Answer || row.a;
-                const difficulty = row.difficulty || row.Difficulty || "Medium";
-
-                if (question && answer) {
-                  await connection.query(
-                    "INSERT INTO crossword_questions (question, answer, difficulty) VALUES (?, ?, ?)",
-                    [question.trim(), answer.trim().toUpperCase(), difficulty.trim()]
-                  );
-                  inserted++;
-                }
-              }
-              await connection.commit();
-              resolve();
-            } catch (err) {
-              await connection.rollback();
-              reject(err);
-            }
-          })
-          .on("error", (error) => reject(error));
-      });
-    };
-
-    await processCSV();
-    
-    // Clean up uploaded file
-    fs.unlink(req.file.path, (err) => {
-      if (err) console.warn("Failed to delete uploaded file:", err);
-    });
-
-    res.json({ success: true, inserted });
-  } catch (err) {
-    console.error("Error uploading crossword questions:", err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    connection.release();
-  }
-});
-
-// POST: Start crossword game
-app.post("/crossword/start-game", async (req, res) => {
-  try {
-    console.log("🎮 Starting crossword game...");
-
-    const { game_code, questions: providedQuestions } = req.body;
-
-    if (!Array.isArray(providedQuestions) || providedQuestions.length === 0) {
-      console.log("❌ No questions provided");
-      return res.status(400).json({
-        success: false,
-        error: "No crossword questions provided",
-      });
-    }
-
-    // Generate crossword grid
-    console.log(`📝 Generating crossword grid with ${providedQuestions.length} questions...`);
-    const gridResult = generateCrosswordGrid(providedQuestions, 15);
-
-    if (!gridResult.success) {
-      return res.status(500).json({
-        success: false,
-        error: gridResult.error || "Failed to generate crossword grid",
-      });
-    }
-
-    // Store crossword game state
-    crosswordGameActive = true;
-    crosswordGameSessionId = `crossword_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    crosswordGrid = gridResult.gameGrid;
-    crosswordPlacedWords = gridResult.placedWords;
-    currentCrosswordQuestions = providedQuestions;
-    crosswordAnswers.clear();
-
-    console.log(`✅ Crossword game started. Session: ${crosswordGameSessionId}`);
-    console.log(`📊 Placed words: ${gridResult.placedWords.length}`);
-    console.log(`🎮 Grid size: ${gridResult.gridSize}x${gridResult.gridSize}`);
-
-    // Transform grid data for frontend compatibility
-    const gridArray = crosswordGrid.map(row => 
-      row.map(cell => {
-        if (cell.isBlack) return '#';
-        return cell.letter || ' '; // Use space for empty white cells instead of '.'
-      })
-    );
-    
-    const cellNumbers = {};
-    crosswordGrid.forEach((row, rIdx) => {
-      row.forEach((cell, cIdx) => {
-        if (cell.number && cell.number > 0) {
-          cellNumbers[`${rIdx}-${cIdx}`] = cell.number;
-        }
-      });
-    });
-    
-    const acrossClues = crosswordPlacedWords
-      .filter(w => w.direction === 'across')
-      .map(w => ({
-        number: w.number,
-        clue: w.clue,
-        answer: w.word,
-        startRow: w.startRow,
-        startCol: w.startCol,
-        length: w.length,
-        direction: 'across'
-      }));
-    
-    const downClues = crosswordPlacedWords
-      .filter(w => w.direction === 'down')
-      .map(w => ({
-        number: w.number,
-        clue: w.clue,
-        answer: w.word,
-        startRow: w.startRow,
-        startCol: w.startCol,
-        length: w.length,
-        direction: 'down'
-      }));
-
-    console.log(`✅ Transformed grid: ${gridArray.length}x${gridArray[0].length} cells`);
-    console.log(`✅ Across clues: ${acrossClues.length}, Down clues: ${downClues.length}`);
-
-    // Emit in new format
-    io.emit("crosswordGameStarted", {
-      sessionId: crosswordGameSessionId,
-      grid: gridArray,
-      words: crosswordPlacedWords,
-      totalWords: crosswordPlacedWords.length,
-      gridSize: gridResult.gridSize,
-    });
-
-    // Also emit in old format for existing frontend compatibility
-    io.emit("crosswordGrid", {
-      grid: gridArray,
-      acrossClues,
-      downClues,
-      cellNumbers,
-      clues: [...acrossClues, ...downClues]
-    });
-
-    console.log(`📡 Crossword events emitted to all clients`);
-
-    res.json({
-      success: true,
-      message: "Crossword game started successfully",
-      sessionId: crosswordGameSessionId,
-      grid: gridArray,
-      words: crosswordPlacedWords,
-      totalWords: crosswordPlacedWords.length,
-      gridSize: gridResult.gridSize,
-      acrossClues,
-      downClues,
-      cellNumbers
-    });
-  } catch (err) {
-    console.error("Error starting crossword game:", err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-    });
-  }
-});
-
-// GET: Crossword game status
-app.get("/crossword/game-status", (req, res) => {
-  res.json({
-    active: crosswordGameActive,
-    sessionId: crosswordGameSessionId,
-    gridSize: crosswordGrid ? crosswordGrid.length : 0,
-    totalWords: crosswordPlacedWords ? crosswordPlacedWords.length : 0,
-  });
-});
-
-// ==========================================
 // ----- TEACHER ANALYTICS ENDPOINTS -----
 // ==========================================
 
@@ -2473,13 +2121,7 @@ app.get("/teacher/:teacher_id/analytics", async (req, res) => {
       "SELECT COUNT(*) as total FROM answers WHERE answered_at >= ?",
       [dateFilter]
     );
-    
-    // Get total crossword answers (filtered by timeRange)
-    const [crosswordAnswers] = await pool.query(
-      "SELECT COUNT(*) as total FROM crossword_answers WHERE answered_at >= ?",
-      [dateFilter]
-    );
-    const totalQuestionsAnswered = (answers[0]?.total || 0) + (crosswordAnswers[0]?.total || 0);
+    const totalQuestionsAnswered = answers[0]?.total || 0;
     
     // Get average accuracy from performance table (filtered by timeRange)
     const [accuracy] = await pool.query(
@@ -2492,11 +2134,7 @@ app.get("/teacher/:teacher_id/analytics", async (req, res) => {
       "SELECT COUNT(DISTINCT game_session_id) as total FROM answers WHERE answered_at >= ?",
       [dateFilter]
     );
-    const [crosswordGames] = await pool.query(
-      "SELECT COUNT(DISTINCT game_session_id) as total FROM crossword_answers WHERE answered_at >= ?",
-      [dateFilter]
-    );
-    const totalGamesPlayed = (games[0]?.total || 0) + (crosswordGames[0]?.total || 0);
+    const totalGamesPlayed = games[0]?.total || 0;
 
     // Calculate trends (last 30 days vs previous 30 days)
     const now2 = new Date();
@@ -2645,37 +2283,14 @@ app.get("/teacher/:teacher_id/analytics/students-game-breakdown", async (req, re
         COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) as wisdomGames,
         COALESCE(p.correct_answers, 0) as wisdomCorrect,
         COALESCE(p.accuracy, 0) as wisdomAccuracy,
-        -- Crossword stats (aggregated from multiple rows per user)
-        COALESCE(SUM(cs.score), 0) as crosswordScore,
-        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM crossword_answers WHERE user_id = u.user_id), 0) as crosswordGames,
-        COALESCE(SUM(cs.correct_answers), 0) as crosswordCorrect,
-        COALESCE(
-          CASE
-            WHEN SUM(cs.attempts) > 0
-            THEN ROUND(SUM(cs.correct_answers) * 100 / SUM(cs.attempts), 2)
-            ELSE 0
-          END,
-          0
-        ) as crosswordAccuracy,
-        -- Combined totals
-        (COALESCE(p.score, 0) + COALESCE(SUM(cs.score), 0)) as totalScore,
-        (COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) + 
-         COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM crossword_answers WHERE user_id = u.user_id), 0)) as totalGames,
-        COALESCE(
-          CASE
-            WHEN (COALESCE(p.attempts, 0) + COALESCE(SUM(cs.attempts), 0)) > 0
-            THEN ROUND(((COALESCE(p.correct_answers, 0) + COALESCE(SUM(cs.correct_answers), 0)) * 100 / 
-                   (COALESCE(p.attempts, 0) + COALESCE(SUM(cs.attempts), 0))), 2)
-            ELSE 0
-          END, 
-          0
-        ) as combinedAccuracy
+        COALESCE(p.score, 0) as totalScore,
+        COALESCE((SELECT COUNT(DISTINCT game_session_id) FROM answers WHERE user_id = u.user_id), 0) as totalGames,
+        COALESCE(p.accuracy, 0) as combinedAccuracy
       FROM users u
       LEFT JOIN performance p ON u.user_id = p.user_id
-      LEFT JOIN crossword_scores cs ON u.user_id = cs.user_id
       WHERE u.role = 'student'
       GROUP BY u.user_id, u.display_name, u.email, p.score, p.attempts, p.correct_answers, p.accuracy
-      ORDER BY (COALESCE(p.score, 0) + COALESCE(SUM(cs.score), 0)) DESC
+      ORDER BY COALESCE(p.score, 0) DESC
     `);
     
     res.json(students);
@@ -2861,26 +2476,6 @@ app.get("/performance", async (req, res) => {
   }
 });
 
-// GET: Crossword answers
-app.get("/crossword/answers", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT * FROM crossword_answers ORDER BY answered_at DESC");
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET: Crossword scores
-app.get("/crossword/scores", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT * FROM crossword_scores ORDER BY last_updated DESC");
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // GET: Users by role
 app.get("/users", async (req, res) => {
   const { role } = req.query;
@@ -3021,70 +2616,6 @@ io.on("connection", (socket) => {
         ? questions[currentIndex]
         : null,
   });
-
-  // Send crossword game if active
-  if (crosswordGameActive && crosswordGrid && crosswordPlacedWords) {
-    console.log(`📤 Sending active crossword game to ${socket.id}`);
-    
-    // Transform data for frontend compatibility
-    const gridArray = crosswordGrid.map(row => 
-      row.map(cell => {
-        if (cell.isBlack) return '#';
-        return cell.letter || ' '; // Use space for empty white cells instead of '.'
-      })
-    );
-    
-    const cellNumbers = {};
-    crosswordGrid.forEach((row, rIdx) => {
-      row.forEach((cell, cIdx) => {
-        if (cell.number && cell.number > 0) {
-          cellNumbers[`${rIdx}-${cIdx}`] = cell.number;
-        }
-      });
-    });
-    
-    const acrossClues = crosswordPlacedWords
-      .filter(w => w.direction === 'across')
-      .map(w => ({
-        number: w.number,
-        clue: w.clue,
-        answer: w.word,
-        startRow: w.startRow,
-        startCol: w.startCol,
-        length: w.length,
-        direction: 'across'
-      }));
-    
-    const downClues = crosswordPlacedWords
-      .filter(w => w.direction === 'down')
-      .map(w => ({
-        number: w.number,
-        clue: w.clue,
-        answer: w.word,
-        startRow: w.startRow,
-        startCol: w.startCol,
-        length: w.length,
-        direction: 'down'
-      }));
-    
-    // Emit in new format
-    socket.emit("crosswordGameStarted", {
-      sessionId: crosswordGameSessionId,
-      grid: gridArray,
-      words: crosswordPlacedWords,
-      totalWords: crosswordPlacedWords.length,
-      gridSize: crosswordGrid.length,
-    });
-    
-    // Also emit in old format for existing frontend compatibility
-    socket.emit("crosswordGrid", {
-      grid: gridArray,
-      acrossClues,
-      downClues,
-      cellNumbers,
-      clues: [...acrossClues, ...downClues]
-    });
-  }
 
   if (
     isGameActive &&
@@ -3472,133 +3003,6 @@ io.on("connection", (socket) => {
     } else {
       socket.emit("gameError", { error: "No questions available" });
     }
-  });
-
-  // ==========================================
-  // ----- CROSSWORD SOCKET EVENTS -----
-  // ==========================================
-
-  socket.on("getCrosswordGame", () => {
-    if (crosswordGameActive && crosswordGrid && crosswordPlacedWords) {
-      console.log(`📤 Sending crossword game to client: ${socket.id}`);
-      socket.emit("crosswordGameStarted", {
-        sessionId: crosswordGameSessionId,
-        grid: crosswordGrid,
-        words: crosswordPlacedWords,
-        totalWords: crosswordPlacedWords.length,
-        gridSize: crosswordGrid.length,
-      });
-    } else {
-      socket.emit("noCrosswordGame", { message: "No active crossword game" });
-    }
-  });
-
-  socket.on("submitCrosswordAnswer", async ({ user_id, email, display_name, answers }) => {
-    try {
-      console.log(`✅ Crossword answers submitted by ${email}`);
-
-      if (!crosswordGameActive) {
-        socket.emit("crosswordError", { error: "No active crossword game" });
-        return;
-      }
-
-      // Store user's answers
-      const userAnswers = crosswordAnswers.get(user_id) || { answers: {}, score: 0 };
-      userAnswers.answers = answers;
-
-      // Calculate score based on correct answers
-      let correctCount = 0;
-      for (const word of crosswordPlacedWords) {
-        const wordAnswer = (answers[word.number] || "").toUpperCase().trim();
-        const correctAnswer = word.word.toUpperCase().trim();
-        
-        if (wordAnswer === correctAnswer) {
-          correctCount++;
-        }
-      }
-
-      userAnswers.score = correctCount;
-      crosswordAnswers.set(user_id, userAnswers);
-
-      const accuracy = crosswordPlacedWords.length > 0 
-        ? ((correctCount / crosswordPlacedWords.length) * 100).toFixed(1)
-        : 0;
-
-      console.log(`📊 ${email}: ${correctCount}/${crosswordPlacedWords.length} correct (${accuracy}%)`);
-
-      // Send result to user
-      socket.emit("crosswordResult", {
-        success: true,
-        correctAnswers: correctCount,
-        totalAnswers: crosswordPlacedWords.length,
-        accuracy: accuracy,
-        score: userAnswers.score,
-      });
-
-      // Broadcast updated leaderboard
-      const leaderboard = Array.from(crosswordAnswers.entries())
-        .map(([uid, data]) => ({
-          user_id: uid,
-          score: data.score,
-          total: crosswordPlacedWords.length,
-          accuracy: crosswordPlacedWords.length > 0 
-            ? ((data.score / crosswordPlacedWords.length) * 100).toFixed(1)
-            : 0,
-        }))
-        .sort((a, b) => b.score - a.score);
-
-      io.emit("crosswordLeaderboard", leaderboard);
-
-      // Optionally record in database
-      if (email && display_name) {
-        const connection = await pool.getConnection();
-        try {
-          // Record crossword game result
-          const [userRes] = await connection.query(
-            "SELECT user_id FROM users WHERE LOWER(email) = LOWER(?)",
-            [email]
-          );
-
-          if (userRes.length > 0) {
-            const userId = userRes[0].user_id;
-            await connection.query(
-              `INSERT INTO crossword_results (user_id, session_id, correct_answers, total_answers, accuracy)
-               VALUES (?, ?, ?, ?, ?)`,
-              [userId, crosswordGameSessionId, correctCount, crosswordPlacedWords.length, accuracy]
-            );
-          }
-        } catch (dbErr) {
-          console.warn("Could not record crossword result to DB:", dbErr.message);
-        } finally {
-          connection.release();
-        }
-      }
-
-    } catch (err) {
-      console.error("Crossword answer submission error:", err);
-      socket.emit("crosswordError", { error: "Error processing crossword answers" });
-    }
-  });
-
-  socket.on("endCrosswordGame", () => {
-    console.log(`🏁 Crossword game ended`);
-    
-    crosswordGameActive = false;
-    crosswordGrid = null;
-    crosswordPlacedWords = null;
-    currentCrosswordQuestions = [];
-    
-    io.emit("crosswordGameEnded", {
-      finalLeaderboard: Array.from(crosswordAnswers.entries())
-        .map(([uid, data]) => ({
-          user_id: uid,
-          score: data.score,
-          total: crosswordPlacedWords ? crosswordPlacedWords.length : 0,
-        }))
-        .sort((a, b) => b.score - a.score),
-    });
-    
-    crosswordAnswers.clear();
   });
 
   socket.on("leaveGame", async (data) => {

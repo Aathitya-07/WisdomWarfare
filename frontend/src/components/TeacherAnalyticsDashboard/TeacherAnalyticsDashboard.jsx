@@ -5,8 +5,10 @@ import {
   PieChart, Pie, Cell, LineChart, Line, ComposedChart, RadarChart, Radar,
   PolarGrid, PolarAngleAxis, PolarRadiusAxis
 } from 'recharts';
+import { mergeStudentGameBreakdowns } from '../../utils/helpers';
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const CROSSWORD_API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 // ⚡ DEBOUNCE UTILITY FOR OPTIMIZED BUTTON CLICKS
 const createDebouncedFunction = (fn, delay = 300) => {
@@ -214,10 +216,35 @@ const [autoRefresh, setAutoRefresh] = useState(false);
 
   const fetchOverview = async (teacherId, timeRange = 'week') => {
     try {
-      const res = await fetch(`${API_BASE}/teacher/${teacherId}/analytics?timeRange=${timeRange}`);
-      if (!res.ok) throw new Error('Failed to fetch overview');
-      const data = await res.json();
-      return data;
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/teacher/${teacherId}/analytics?timeRange=${timeRange}`),
+        fetch(`${CROSSWORD_API_BASE}/crossword/analytics/overview?timeRange=${timeRange}`),
+      ]);
+      if (!wisdomRes.ok) throw new Error('Failed to fetch overview');
+
+      const wisdomData = await wisdomRes.json();
+      const crosswordData = crosswordRes.ok ? await crosswordRes.json() : { overview: {} };
+
+      const wisdomOverview = wisdomData?.overview || wisdomData || {};
+      const crosswordOverview = crosswordData?.overview || {};
+      const wisdomPrev = wisdomOverview.prevPeriodComparison || {};
+      const crosswordPrev = crosswordOverview.prevPeriodComparison || {};
+
+      return {
+        ...wisdomData,
+        overview: {
+          ...wisdomOverview,
+          totalQuestionsAnswered: (wisdomOverview.totalQuestionsAnswered || 0) + (crosswordOverview.totalQuestionsAnswered || 0),
+          totalGamesPlayed: (wisdomOverview.totalGamesPlayed || 0) + (crosswordOverview.totalGamesPlayed || 0),
+          avgAccuracy: ((wisdomOverview.avgAccuracy || 0) + (crosswordOverview.avgAccuracy || 0)) / ((crosswordRes.ok ? 2 : 1)),
+          prevPeriodComparison: {
+            ...wisdomPrev,
+            questions: (wisdomPrev.questions || 0) + (crosswordPrev.questions || 0),
+            games: (wisdomPrev.games || 0) + (crosswordPrev.games || 0),
+            accuracy: (wisdomPrev.accuracy || 0) + (crosswordPrev.accuracy || 0),
+          }
+        }
+      };
     } catch (error) {
       console.error('Error fetching overview:', error);
       return {
@@ -247,18 +274,27 @@ const [autoRefresh, setAutoRefresh] = useState(false);
 
   const fetchStudents = async (teacherId) => {
     try {
-      // Try to fetch game-specific breakdown first
-      const res = await fetch(`${API_BASE}/teacher/${teacherId}/analytics/students-game-breakdown`);
-      const data = await res.json();
-      
-      // If that endpoint doesn't exist, fallback to regular endpoint
-      if (!res.ok) {
-        const fallbackRes = await fetch(`${API_BASE}/teacher/${teacherId}/analytics/students`);
-        const fallbackData = await fallbackRes.json();
-        return Array.isArray(fallbackData) ? fallbackData : [];
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/teacher/${teacherId}/analytics/students-game-breakdown`),
+        fetch(`${CROSSWORD_API_BASE}/crossword/analytics/students-breakdown`),
+      ]);
+
+      const wisdomData = wisdomRes.ok ? await wisdomRes.json() : [];
+      const crosswordData = crosswordRes.ok ? await crosswordRes.json() : [];
+
+      if (wisdomRes.ok) {
+        return mergeStudentGameBreakdowns(
+          Array.isArray(wisdomData) ? wisdomData : [],
+          Array.isArray(crosswordData) ? crosswordData : []
+        );
       }
-      
-      return Array.isArray(data) ? data : [];
+
+      const fallbackRes = await fetch(`${API_BASE}/teacher/${teacherId}/analytics/students`);
+      const fallbackData = await fallbackRes.json();
+      return mergeStudentGameBreakdowns(
+        Array.isArray(fallbackData) ? fallbackData : [],
+        Array.isArray(crosswordData) ? crosswordData : []
+      );
     } catch (error) {
       console.error('Error fetching students:', error);
       try {

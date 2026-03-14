@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { mergeGameLeaderboards } from '../../utils/helpers';
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const CROSSWORD_API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 // Helper function to format accuracy
 const formatAccuracy = (accuracy) => {
@@ -40,10 +42,28 @@ const StudentDashboard = () => {
 
   const fetchGamePerformance = async () => {
     try {
-      const response = await fetch(`${API_BASE}/student/${userId}/game-performance`);
-      if (response.ok) {
-        const data = await response.json();
-        setGamePerformance(data);
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/student/${userId}/game-performance`),
+        fetch(`${CROSSWORD_API_BASE}/crossword/student/${userId}/performance`),
+      ]);
+
+      if (wisdomRes.ok || crosswordRes.ok) {
+        const wisdomData = wisdomRes.ok ? await wisdomRes.json() : {};
+        const crosswordData = crosswordRes.ok ? await crosswordRes.json() : {};
+        setGamePerformance({
+          wisdomWarfare: wisdomData.wisdomWarfare || {
+            score: 0,
+            attempts: 0,
+            correct_answers: 0,
+            accuracy: 0,
+          },
+          crossword: {
+            score: crosswordData.score || 0,
+            attempts: crosswordData.attempts || 0,
+            correct_answers: crosswordData.correct_answers || 0,
+            accuracy: crosswordData.accuracy || 0,
+          },
+        });
       }
     } catch (error) {
       console.error('Error fetching game performance:', error);
@@ -54,7 +74,7 @@ const StudentDashboard = () => {
     try {
       const [wisdomRes, crosswordRes] = await Promise.all([
         fetch(`${API_BASE}/leaderboard/wisdom-warfare?limit=10`),
-        fetch(`${API_BASE}/leaderboard/crossword?limit=10`)
+        fetch(`${CROSSWORD_API_BASE}/leaderboard/crossword?limit=10`)
       ]);
 
       if (wisdomRes.ok) {
@@ -103,10 +123,16 @@ const StudentDashboard = () => {
 
   const fetchLeaderboard = async () => {
     try {
-      const response = await fetch(`${API_BASE}/leaderboard/global?limit=100`);
-      if (response.ok) {
-        const data = await response.json();
-        setLeaderboard(data);
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/leaderboard/wisdom-warfare?limit=100`),
+        fetch(`${CROSSWORD_API_BASE}/leaderboard/crossword?limit=100`),
+      ]);
+      if (wisdomRes.ok && crosswordRes.ok) {
+        const [wisdomData, crosswordData] = await Promise.all([
+          wisdomRes.json(),
+          crosswordRes.json(),
+        ]);
+        setLeaderboard(mergeGameLeaderboards(wisdomData || [], crosswordData || []));
       }
     } catch (error) {
       console.error('Error fetching leaderboard:', error);

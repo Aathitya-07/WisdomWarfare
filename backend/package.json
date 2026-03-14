@@ -4,7 +4,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "start:crossword": "node crosswordserver.js",
+    "dev:crossword": "nodemon crosswordserver.js"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

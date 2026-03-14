@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { formatAccuracyCompat as formatAccuracy } from './utils/helpers';
+import { formatAccuracyCompat as formatAccuracy, mergeGameLeaderboards } from './utils/helpers';
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4001";
+const CROSSWORD_API_BASE = process.env.REACT_APP_CROSSWORD_API_BASE || "http://localhost:4002";
 
 function RulesModal({ title, rules, onClose }) {
   if (!rules) return null;
@@ -36,14 +37,21 @@ function LeaderboardModal({ onClose }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/leaderboard/global?limit=50`);
+      const [wisdomRes, crosswordRes] = await Promise.all([
+        fetch(`${API_BASE}/leaderboard/wisdom-warfare?limit=50`),
+        fetch(`${CROSSWORD_API_BASE}/leaderboard/crossword?limit=50`),
+      ]);
 
-      if (!res.ok) {
+      if (!wisdomRes.ok || !crosswordRes.ok) {
         throw new Error('Failed to fetch global leaderboard');
       }
 
-      const data = await res.json();
-      setGlobalPlayers(data || []);
+      const [wisdomData, crosswordData] = await Promise.all([
+        wisdomRes.json(),
+        crosswordRes.json(),
+      ]);
+
+      setGlobalPlayers(mergeGameLeaderboards(wisdomData || [], crosswordData || []));
     } catch (err) {
       console.error('Failed to fetch global leaderboard:', err);
       setError(err.message || String(err));
@@ -231,6 +239,33 @@ function GamePage({ user, onLogout }) {
   const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
   const [enteringGame, setEnteringGame] = useState(false);
 
+  const validateGameCode = useCallback(async (trimmedCode, gameType) => {
+    const primaryBase = gameType === "A. Crossword" ? CROSSWORD_API_BASE : API_BASE;
+    const secondaryBase = gameType === "A. Crossword" ? API_BASE : CROSSWORD_API_BASE;
+
+    const tryValidate = async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/game/code/${encodeURIComponent(trimmedCode)}`);
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json();
+      const game = data.game || data;
+      if (!game || !game.game_code || !game.game_name) {
+        return null;
+      }
+
+      return game;
+    };
+
+    let game = await tryValidate(primaryBase);
+    if (!game) {
+      game = await tryValidate(secondaryBase);
+    }
+
+    return game;
+  }, []);
+
   useEffect(() => {
     if (!user) {
       navigate("/", { replace: true });
@@ -280,26 +315,10 @@ function GamePage({ user, onLogout }) {
 
     try {
       setEnteringGame(true);
-
-      // Validate game code
-      const res = await fetch(
-        `${API_BASE}/game/code/${encodeURIComponent(trimmed)}`
-      );
-
-      if (!res.ok) {
-        if (res.status === 404) {
-          alert("Invalid game code. Please check the code sent by your teacher.");
-        } else {
-          alert("Error validating game code.");
-        }
-        return;
-      }
-
-      const data = await res.json();
-      const game = data.game || data;
+      const game = await validateGameCode(trimmed, gameType);
 
       if (!game || !game.game_code || !game.game_name) {
-        alert("Invalid game session returned from server.");
+        alert("Invalid game code. Please check the code sent by your teacher.");
         return;
       }
 
@@ -347,7 +366,7 @@ function GamePage({ user, onLogout }) {
       });
     } catch (err) {
       console.error("Error entering game:", err);
-      alert("Failed to enter game.");
+      alert("Failed to enter game. Please try again.");
     } finally {
       setEnteringGame(false);
     }
