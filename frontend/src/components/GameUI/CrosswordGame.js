@@ -408,11 +408,9 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
       if (isMe) {
         pendingSubmissionWordIdsRef.current.delete(String(data.wordId));
         setCompletedWords(prev => [...new Set([...prev, data.wordId])]);
-        const pts = data.points || 10;
+        const pts = Number(data.points) || 0;
         setResult({
-          message: pts === 15
-            ? '⚡ First correct answer! +15 points'
-            : '✅ Correct answer! +10 points',
+          message: `✅ Correct answer! +${pts} points`,
           correct: true,
           points: pts
         });
@@ -1566,7 +1564,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
                     <h2 className="text-3xl font-bold text-white mb-2">{gameName || 'CROSSWORD PUZZLE'}</h2>
                     <p className="text-gray-300 text-sm">
                       Solve the crossword by clicking a clue to lock it and entering the answer.
-                      First correct answer gets +15 points, subsequent correct answers get +10 points.
+                      Each correct answer gives +5 points.
                     </p>
                   </div>
 
@@ -1574,9 +1572,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
 
                   {result.message && (
                     <div className={`mt-4 p-4 rounded-lg text-center font-bold text-lg ${
-                      result.correct && result.points === 15
-                        ? 'bg-yellow-600 text-white'
-                        : result.correct
+                      result.correct
                         ? 'bg-green-600 text-white'
                         : 'bg-red-600 text-white'
                     }`}>

@@ -278,12 +278,12 @@ function GamePage({ user, onLogout }) {
     "Wisdom Warfare": {
       title: "Wisdom Warfare",
       rules:
-        "Answer multiple-choice questions quickly to earn points. Correct answers earn 10 points, with a 5-point bonus for being the first to answer correctly. The game code will be shared by your teacher. Multiple sessions can be played throughout the course.",
+        "MCQ game: +10 for each correct answer. First correct answer within 5 seconds gets +5 bonus. One 50:50 power-up per player per game removes two wrong options.",
     },
     "A. Crossword": {
       title: "A. Crossword",
       rules:
-        "Solve a live crossword puzzle with compiler design clues. First correct word earns 15 points, other correct answers earn 10 points. Each word can be solved once. Complete the grid to maximize your score. Real-time competition with other players.",
+        "Crossword game: +5 for each correct word. Any player can answer any word, and each player can submit a word once per game session.",
     },
   };
 
