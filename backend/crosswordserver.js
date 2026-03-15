@@ -1004,25 +1004,11 @@ app.post("/crossword/submit-answer", async (req, res) => {
       user_answer &&
       q.answer.trim().toLowerCase() === user_answer.trim().toLowerCase();
 
-    // Check session for bonus points
     const session = crosswordSessions.get(game_session_id);
-    let points = isCorrect ? 10 : 0;
-    
+    const points = isCorrect ? 5 : 0;
+
     if (isCorrect && session) {
-      const isFirst = !session.solvedWords.has(crossword_question_id);
-      
-      // Time-based bonus calculation
-      const elapsed = Date.now() - session.startTime;
-      let timeBonus = 0;
-      if (elapsed < 30000) timeBonus = 5;
-      else if (elapsed < 60000) timeBonus = 3;
-      
-      if (isFirst) {
-        points = 15 + timeBonus;
-        session.solvedWords.add(crossword_question_id);
-      } else {
-        points = 10 + timeBonus;
-      }
+      session.solvedWords.add(crossword_question_id);
     }
 
     // Insert answer history
@@ -1656,22 +1642,10 @@ io.on("connection", (socket) => {
       }
 
       const isCorrect = word.trim().toLowerCase() === question.answer.trim().toLowerCase();
-      const elapsed = Date.now() - session.startTime;
-      
-      let points = 10;
-      let timeBonus = 0;
-      
-      if (elapsed < 30000) timeBonus = 5;
-      else if (elapsed < 60000) timeBonus = 3;
-      
-      const isFirst = !session.solvedWords.has(crossword_question_id);
-      if (isCorrect && isFirst) {
-        points = 15 + timeBonus;
+      const points = isCorrect ? 5 : 0;
+
+      if (isCorrect) {
         session.solvedWords.add(crossword_question_id);
-      } else if (isCorrect) {
-        points = 10 + timeBonus;
-      } else {
-        points = 0;
       }
 
       // Record answer in database
@@ -1710,7 +1684,6 @@ io.on("connection", (socket) => {
             display_name: currentPlayer?.display_name || null,
           },
           points,
-          timeBonus: timeBonus > 0 ? `+${timeBonus} time bonus` : null
         });
       }
 
