@@ -40,7 +40,6 @@ const GameUI = ({ user, onLogout }) => {
   const [submissionClosed, setSubmissionClosed] = useState(false); // ✅ NEW: Track if submission window is closed (time expired)
   const [currentQuestionId, setCurrentQuestionId] = useState(null); // ✅ NEW: Track current question ID to prevent stale messages
   const [leaderboard, setLeaderboard] = useState([]);
-  const [lobbyPlayers, setLobbyPlayers] = useState([]); // ✅ NEW: Track players in waiting room
   const [connected, setConnected] = useState(false);
   const [gameCompleted, setGameCompleted] = useState(false);
   const [finalResults, setFinalResults] = useState(null);
@@ -544,29 +543,6 @@ const GameUI = ({ user, onLogout }) => {
       setLeaderboard(Array.isArray(data) ? data : []);
     };
 
-    // ✅ NEW: Handle lobby player updates (waiting room)
-    const onLobbyUpdate = (data) => {
-      console.log('👥 Lobby updated:', data);
-      if (!mountedRef.current || !data) return;
-      
-      // ✅ Only update if game code matches (isolation)
-      if (data.game_code && data.game_code !== gameCode) {
-        console.log('⚠️ Ignoring lobby from different game code:', data.game_code);
-        return;
-      }
-      
-      // ✅ Set lobby players with default score of 0
-      if (Array.isArray(data.players)) {
-        const lobbyPlayersWithZeroScore = data.players.map(p => ({
-          ...p,
-          score: 0, // UI-level default for waiting room
-          waitingRoom: true // Mark as lobby view
-        }));
-        setLobbyPlayers(lobbyPlayersWithZeroScore);
-        console.log(`👥 Lobby players updated: ${data.playerCount} joined`);
-      }
-    };
-
     // Wisdom Warfare specific events
     const onGameStatus = (status) => {
       console.log('📊 Game status received:', status);
@@ -1028,7 +1004,6 @@ const GameUI = ({ user, onLogout }) => {
     newSocket.on('gameCompleted', onGameCompleted);
     newSocket.on('gameEnded', onGameEnded); // ✅ ADD: Listen for game end when all players leave
     newSocket.on('leaderboardUpdate', onLeaderboardUpdate);
-    newSocket.on('lobbyUpdate', onLobbyUpdate); // ✅ NEW: Listen for waiting room player updates
     
     return () => {
       // ✅ CLEANUP: Stop timers
@@ -1089,7 +1064,6 @@ const GameUI = ({ user, onLogout }) => {
         newSocket.off('gameCompleted', onGameCompleted);
         newSocket.off('gameEnded', onGameEnded); // ✅ REMOVE: Remove gameEnded listener
         newSocket.off('leaderboardUpdate', onLeaderboardUpdate);
-        newSocket.off('lobbyUpdate', onLobbyUpdate); // ✅ NEW: Remove lobby update listener
 
         newSocket.disconnect();
       }
@@ -1361,49 +1335,16 @@ const GameUI = ({ user, onLogout }) => {
   const renderMCQQuestion = () => {
     if (!currentQuestion) {
       return (
-        <div className="text-center py-10">
+        <div className="text-center py-16">
           <div className="text-6xl text-cyan-400 mb-6">⏳</div>
           <h3 className="text-3xl font-bold text-white mb-4">
             Waiting for Questions
           </h3>
-          <p className="text-gray-300 text-lg mb-8">
+          <p className="text-gray-300 text-lg">
             {gameStatus.questionsLoaded === 0 
               ? "No questions available. Please ask the administrator to upload questions."
               : "The next question will appear shortly. Get ready!"}
           </p>
-
-          {/* ✅ NEW: Lobby Player List Display */}
-          {lobbyPlayers.length > 0 && (
-            <div className="max-w-2xl mx-auto">
-              <div className="bg-gray-800 rounded-2xl p-6 border-2 border-cyan-600 mb-6">
-                <div className="flex items-center justify-between mb-4 pb-4 border-b border-cyan-600">
-                  <h4 className="text-2xl font-bold text-cyan-300">👥 Lobby</h4>
-                  <span className="text-lg font-bold text-yellow-400">
-                    Players Joined: {lobbyPlayers.length}
-                  </span>
-                </div>
-                
-                <div className="space-y-3">
-                  {lobbyPlayers.map((player, index) => (
-                    <div 
-                      key={player.email || player.user_id || index}
-                      className="flex justify-between items-center p-3 bg-gray-700 rounded-lg border-l-4 border-cyan-500"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="text-cyan-300 font-bold">#{index + 1}</span>
-                        <div>
-                          <p className="text-white font-semibold">
-                            {player.display_name || player.email}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="text-lg font-bold text-green-400">$0</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       );
     }

@@ -2720,16 +2720,6 @@ io.on("connection", (socket) => {
             // ✅ Broadcast updated leaderboard only to this game room
             io.to(`game_${game_code}`).emit("leaderboardUpdate", leaderboard);
             console.log(`📊 Broadcast to game_${game_code}: ${leaderboard.length} players in leaderboard with names`);
-
-            // ✅ NEW: Broadcast lobby update to waiting players (if game not started)
-            if (!gameState || !gameState.isGameActive) {
-              io.to(`game_${game_code}`).emit("lobbyUpdate", {
-                game_code: game_code,
-                playerCount: leaderboard.length,
-                players: leaderboard
-              });
-              console.log(`👥 Lobby update broadcast to game_${game_code}: ${leaderboard.length} players waiting`);
-            }
           } catch (fetchError) {
             console.error("⚠️ Error fetching leaderboard:", fetchError.message);
           }
@@ -3107,17 +3097,6 @@ io.on("connection", (socket) => {
               
               // Emit updated leaderboard to all players in this game
               socket.to(`game_${game_code}`).emit('leaderboardUpdate', updatedLeaderboard);
-
-              // ✅ NEW: Broadcast updated lobby to waiting players (if game not started)
-              const gameState = gameStates.get(game_code);
-              if (!gameState || !gameState.isGameActive) {
-                socket.to(`game_${game_code}`).emit("lobbyUpdate", {
-                  game_code: game_code,
-                  playerCount: updatedLeaderboard.length,
-                  players: updatedLeaderboard
-                });
-                console.log(`👥 Lobby update broadcast after leave to game_${game_code}: ${updatedLeaderboard.length} players remaining`);
-              }
             }
           }
         } finally {
