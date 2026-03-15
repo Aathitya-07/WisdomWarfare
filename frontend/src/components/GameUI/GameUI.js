@@ -43,6 +43,8 @@ const GameUI = ({ user, onLogout }) => {
   const [connected, setConnected] = useState(false);
   const [gameCompleted, setGameCompleted] = useState(false);
   const [finalResults, setFinalResults] = useState(null);
+  const [has50_50Used, setHas50_50Used] = useState(false); // ✅ NEW: Track if 50:50 power-up has been used
+  const [eliminated50_50Options, setEliminated50_50Options] = useState([]); // ✅ NEW: Track which options are eliminated by 50:50
   const [gameStatus, setGameStatus] = useState({
     questionsLoaded: 0,
     isGameActive: false,
@@ -100,6 +102,8 @@ const GameUI = ({ user, onLogout }) => {
     setIsAnswerSubmitted(false);
     setHasAnswered(false);
     setSubmissionClosed(false);
+    setHas50_50Used(false);
+    setEliminated50_50Options([]);
     setLeaderboard([]);
     
     console.log('🔄 Reset all game states to waiting - ready to sync with server');
@@ -643,6 +647,7 @@ const GameUI = ({ user, onLogout }) => {
       setIsAnswerSubmitted(false);
       setHasAnswered(false); // ✅ Reset - player hasn't answered yet
       setSubmissionClosed(false); // ✅ Reset - submission window is open
+      setEliminated50_50Options([]); // ✅ RESET: Clear eliminated options for new question
       
       // ✅ CRITICAL: Clear the result message IMMEDIATELY - prevents stale messages
       setResult({
@@ -1186,6 +1191,60 @@ const GameUI = ({ user, onLogout }) => {
     socketRef.current.emit('submitAnswer', payload);
   };
 
+  // ✅ NEW: Handle 50:50 power-up - SAFE (never eliminates correct answer)
+  const handle50_50 = () => {
+    if (has50_50Used || !currentQuestion) {
+      console.warn('50:50 already used or no current question');
+      return;
+    }
+
+    const options = currentQuestion.options || {};
+    const allKeys = Object.keys(options);
+    
+    // Normalize the correct answer to find the key
+    let correctKey = null;
+    const correctValue = currentQuestion.correct?.toString().toUpperCase().trim();
+    
+    // Try to find correct key by matching the key directly
+    for (const key of allKeys) {
+      if (key.toUpperCase() === correctValue) {
+        correctKey = key;
+        break;
+      }
+    }
+    
+    // If not found by key, log warning but proceed safely
+    if (!correctKey) {
+      console.warn('Could not identify correct answer key:', correctValue, 'Available keys:', allKeys);
+      // Fallback: try to match against options values
+      for (const [key, value] of Object.entries(options)) {
+        if (value && correctValue && value.includes(correctValue)) {
+          correctKey = key;
+          break;
+        }
+      }
+    }
+
+    // Get all WRONG answer keys (exclude the correct one)
+    const wrongAnswers = allKeys.filter(key => key !== correctKey);
+    
+    console.log(`🎯 Correct key: ${correctKey}, Wrong answers: ${wrongAnswers.join(', ')}`);
+    
+    // Randomly select UP TO 2 wrong answers to eliminate
+    const toEliminate = [];
+    const wrongCopy = [...wrongAnswers];
+    
+    while (toEliminate.length < 2 && wrongCopy.length > 0) {
+      const randomIndex = Math.floor(Math.random() * wrongCopy.length);
+      toEliminate.push(wrongCopy[randomIndex]);
+      wrongCopy.splice(randomIndex, 1);
+    }
+    
+    setEliminated50_50Options(toEliminate);
+    setHas50_50Used(true);
+    console.log(`✨ 50:50 Power-up used! Eliminated: ${toEliminate.join(', ')} | Correct answer ${correctKey} is SAFE ✓`);
+  };
+
   const handlePlayAgain = () => {
     // ✅ Reset tracking refs
     lastQuestionIdRef.current = null;
@@ -1292,47 +1351,51 @@ const GameUI = ({ user, onLogout }) => {
 
     return (
       <>
-        <div className="flex flex-col sm:flex-row justify-between items-center mb-6 p-4 bg-gray-700 rounded-lg">
-          <div className="flex items-center gap-4 mb-2 sm:mb-0">
-            {/* ✅ TIMER - Now shows 10 seconds with enhanced styling */}
-            <div className={`text-2xl font-bold px-4 py-2 rounded-lg transition-all ${
-              timeLeft <= 3 
-                ? 'bg-red-900 text-red-300 animate-pulse' 
-                : 'bg-gray-900 text-cyan-400'
-            }`}>
-              ⏱️ {timeLeft}s
+        {/* ✅ QUESTION CARD CONTAINER */}
+        <div className="bg-gray-800 rounded-2xl p-6 mb-6 border-2 border-cyan-600">
+          <div className="flex flex-col sm:flex-row justify-between items-center mb-6 p-4 bg-gray-700 rounded-lg">
+            <div className="flex items-center gap-4 mb-2 sm:mb-0">
+              {/* ✅ TIMER - Now shows 10 seconds with enhanced styling */}
+              <div className={`text-2xl font-bold px-4 py-2 rounded-lg transition-all ${
+                timeLeft <= 3 
+                  ? 'bg-red-900 text-red-300 animate-pulse' 
+                  : 'bg-gray-900 text-cyan-400'
+              }`}>
+                ⏱️ {timeLeft}s
+              </div>
+              <div className="text-lg text-gray-300">
+                Difficulty:{' '}
+                <span className="font-bold text-cyan-300">
+                  {currentQuestion.difficulty}
+                </span>
+              </div>
+              <div className="text-lg text-cyan-200">
+                Question:{' '}
+                <span className="font-bold text-cyan-300">
+                  {(currentQuestion.questionNumber || 1)}/
+                  {currentQuestion.totalQuestions || gameStatus.questionsLoaded || '?'}
+                </span>
+              </div>
             </div>
-            <div className="text-lg text-gray-300">
-              Difficulty:{' '}
-              <span className="font-bold text-cyan-300">
-                {currentQuestion.difficulty}
-              </span>
-            </div>
+
             <div className="text-lg text-cyan-200">
-              Question:{' '}
+              Your Score:{' '}
               <span className="font-bold text-cyan-300">
-                {(currentQuestion.questionNumber || 1)}/
-                {currentQuestion.totalQuestions || gameStatus.questionsLoaded || '?'}
+                {gameStats.score}
               </span>
             </div>
           </div>
 
-          <div className="text-lg text-cyan-200">
-            Your Score:{' '}
-            <span className="font-bold text-cyan-300">
-              {gameStats.score}
-            </span>
-          </div>
+          <h2 className="text-2xl font-bold text-white leading-relaxed">
+            {currentQuestion.text}
+          </h2>
         </div>
 
-        <h2 className="text-2xl font-bold text-white mb-8 leading-relaxed">
-          {currentQuestion.text}
-        </h2>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
           {Object.entries(currentQuestion.options || {}).map(
             ([key, value]) => {
               const isSelected = selectedAnswer === key;
+              const isEliminated = eliminated50_50Options.includes(key);
               const correctKeyFromResult = result.correctAnswerKey ?? null;
               const isCorrect = Boolean(result.correct) && isSelected;
               const isWrong = !result.correct && isSelected;
@@ -1347,9 +1410,11 @@ const GameUI = ({ user, onLogout }) => {
                 <button
                   key={key}
                   onClick={() => handleAnswer(key)}
-                  disabled={isDisabled}
+                  disabled={isDisabled || isEliminated}
                   className={`p-4 rounded-xl text-left font-semibold text-lg transition-all duration-200 ${
-                    isSelected
+                    isEliminated
+                      ? 'bg-red-900 text-red-300 border-2 border-red-600 opacity-50 cursor-not-allowed line-through'
+                      : isSelected
                       ? isCorrect
                         ? 'bg-green-600 text-white border-2 border-green-400 scale-105'
                         : 'bg-red-600 text-white border-2 border-red-400 scale-105'
@@ -1366,6 +1431,26 @@ const GameUI = ({ user, onLogout }) => {
               );
             }
           )}
+        </div>
+
+        {/* ✅ POWERUP BUTTON - Below options grid, centered */}
+        <div className="flex justify-center mb-8">
+          <button
+            onClick={handle50_50}
+            disabled={has50_50Used || !gameStatus.isGameActive || isAnswerSubmitted}
+            className={`px-8 py-3 rounded-xl font-bold text-lg transition-all flex items-center gap-2 ${
+              has50_50Used
+                ? 'bg-gray-600 text-gray-400 cursor-not-allowed opacity-50'
+                : !gameStatus.isGameActive
+                ? 'bg-gray-600 text-gray-400 cursor-not-allowed opacity-50'
+                : 'bg-yellow-500 hover:bg-yellow-400 text-gray-900 hover:scale-110 shadow-lg hover:shadow-yellow-500/50'
+            }`}
+            title={has50_50Used ? 'Already used powerup for this game' : 'Eliminate 2 wrong answers (50:50)'}
+          >
+            <span className="text-xl">✨</span>
+            Powerup
+            {has50_50Used && <span className="ml-2">✓ Used</span>}
+          </button>
         </div>
 
         {result.message && (

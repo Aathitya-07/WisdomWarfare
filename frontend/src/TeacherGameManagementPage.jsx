@@ -1102,8 +1102,6 @@ function TeacherGameManagementPage() {
 
   const games = [
     { name: "Wisdom Warfare", icon: "🧠", type: "QUIZ" },
-    { name: "Mystery Spinner", icon: "🎡", type: "SPINNER" },
-    { name: "Escape Room", icon: "🗝", type: "ESCAPE" },
     { name: "A. Crossword", icon: "📝", type: "CROSSWORD" },
   ];
 
@@ -1753,7 +1751,7 @@ function TeacherGameManagementPage() {
       </div>
 
       {/* THIS IS WHERE THE GAME CARDS ARE RENDERED */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-6xl w-full mb-12">
+      <div className="grid grid-cols-2 gap-8 w-full mb-12 mx-auto">
         {games.map((game) => {
           const specificGame = 
              (generatedGame && generatedGame.game_name === game.name ? generatedGame : null) ||

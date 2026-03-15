@@ -280,16 +280,6 @@ function GamePage({ user, onLogout }) {
       rules:
         "Answer multiple-choice questions quickly to earn points. Correct answers earn 10 points, with a 5-point bonus for being the first to answer correctly. The game code will be shared by your teacher. Multiple sessions can be played throughout the course.",
     },
-    "Mystery Spinner": {
-      title: "Mystery Spinner",
-      rules:
-        "Spin the wheel to get random questions from different categories. Each spin reveals a new challenge. Collect points and compete with others!",
-    },
-    "Escape Room": {
-      title: "Escape Room",
-      rules:
-        "Solve compiler design puzzles and challenges to escape the virtual room. Work through increasingly difficult problems to earn your freedom and top scores!",
-    },
     "A. Crossword": {
       title: "A. Crossword",
       rules:
@@ -330,8 +320,6 @@ function GamePage({ user, onLogout }) {
       const gameTypeMap = {
         "Wisdom Warfare": ["Wisdom Warfare", "QUIZ", "MCQ"],
         "A. Crossword": ["A. Crossword", "CROSSWORD", "Crossword"],
-        "Mystery Spinner": ["Mystery Spinner", "SPINNER"],
-        "Escape Room": ["Escape Room", "ESCAPE"]
       };
       
       const allowedNames = gameTypeMap[expectedGameName] || [expectedGameName];
@@ -403,27 +391,13 @@ function GamePage({ user, onLogout }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-6xl w-full">
+      <div className="grid grid-cols-2 gap-12 w-full mx-auto">
         <GameCard
           title="Wisdom Warfare"
           icon="🧠"
           onViewRules={handleViewRules}
           onEnterGame={handleEnterGame}
           disabled={enteringGame}
-        />
-        <GameCard
-          title="Mystery Spinner"
-          icon="🎡"
-          onViewRules={handleViewRules}
-          onEnterGame={handleEnterGame}
-          disabled={true}
-        />
-        <GameCard
-          title="Escape Room"
-          icon="🗝"
-          onViewRules={() => handleViewRules("Escape Room")}
-          onEnterGame={handleEnterGame}
-          disabled={true}
         />
         <GameCard
           title="A. Crossword"
