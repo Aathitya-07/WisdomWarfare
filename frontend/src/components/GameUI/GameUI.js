@@ -1191,6 +1191,111 @@ const GameUI = ({ user, onLogout }) => {
     socketRef.current.emit('submitAnswer', payload);
   };
 
+  const normalizeOptionText = (value) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+
+  const normalizeOptionKey = (raw) => {
+    if (raw === undefined || raw === null) return null;
+    const value = String(raw).trim().toUpperCase();
+
+    if (/^[ABCD]$/.test(value)) return value;
+    if (/^[1-4]$/.test(value)) return String.fromCharCode(64 + Number(value));
+
+    const suffixMatch = value.match(/(?:^|_)([ABCD])$/);
+    if (suffixMatch) return suffixMatch[1];
+
+    return null;
+  };
+
+  const resolveProtectedOptionKeysForQuestion = (question) => {
+    if (!question || !question.options) return null;
+
+    const options = question.options || {};
+    const allKeys = Object.keys(options);
+    if (allKeys.length === 0) return [];
+
+    const protectedKeys = new Set();
+    const addProtectedKey = (key) => {
+      if (allKeys.includes(key)) {
+        protectedKeys.add(key);
+      }
+    };
+
+    const textCandidates = [question.correctAnswer, question.correct_answer].filter(Boolean);
+    const keyCandidates = [
+      question.correctAnswerKey,
+      question.correct,
+      question.correctAnswer,
+      question.correct_answer,
+    ].filter(Boolean);
+
+    // 1) Highest priority: exact option text match from correctAnswer payload.
+    for (const source of textCandidates) {
+      const normalizedSourceText = normalizeOptionText(source);
+      if (!normalizedSourceText) continue;
+
+      for (const [optionKey, optionValue] of Object.entries(options)) {
+        if (normalizeOptionText(optionValue) === normalizedSourceText) {
+          addProtectedKey(optionKey);
+        }
+      }
+    }
+
+    const optionKeyByRaw = new Map(
+      allKeys.map((key) => [String(key).trim().toUpperCase(), key])
+    );
+
+    // 2) Fallback: direct raw key match.
+    for (const source of keyCandidates) {
+      const raw = String(source ?? '').trim().toUpperCase();
+      if (raw && optionKeyByRaw.has(raw)) {
+        addProtectedKey(optionKeyByRaw.get(raw));
+      }
+    }
+
+    // 3) Fallback: normalized key forms (A/B/C/D, 1-4, option_c, etc.).
+    for (const source of keyCandidates) {
+      const normalizedSourceKey = normalizeOptionKey(source);
+      if (!normalizedSourceKey) continue;
+
+      for (const optionKey of allKeys) {
+        const normalizedOptionKey = normalizeOptionKey(optionKey);
+        if (normalizedOptionKey && normalizedOptionKey === normalizedSourceKey) {
+          addProtectedKey(optionKey);
+        }
+      }
+    }
+
+    return Array.from(protectedKeys);
+  };
+
+  // Defensive invariant: if data changes unexpectedly, never keep a protected key eliminated.
+  useEffect(() => {
+    if (!currentQuestion || eliminated50_50Options.length === 0) return;
+
+    const options = currentQuestion.options || {};
+    const optionKeys = new Set(Object.keys(options));
+    const protectedKeys = new Set(
+      resolveProtectedOptionKeysForQuestion(currentQuestion) || []
+    );
+
+    const sanitized = eliminated50_50Options.filter(
+      (key) => optionKeys.has(key) && !protectedKeys.has(key)
+    );
+
+    if (sanitized.length !== eliminated50_50Options.length) {
+      console.warn('50:50 auto-sanitized eliminated options due to invariant check', {
+        before: eliminated50_50Options,
+        after: sanitized,
+        protectedKeys: Array.from(protectedKeys),
+      });
+      setEliminated50_50Options(sanitized);
+    }
+  }, [currentQuestion, eliminated50_50Options]);
+
   // ✅ NEW: Handle 50:50 power-up - SAFE (never eliminates correct answer)
   const handle50_50 = () => {
     if (has50_50Used || !currentQuestion) {
@@ -1200,49 +1305,62 @@ const GameUI = ({ user, onLogout }) => {
 
     const options = currentQuestion.options || {};
     const allKeys = Object.keys(options);
-    
-    // Normalize the correct answer to find the key
-    let correctKey = null;
-    const correctValue = currentQuestion.correct?.toString().toUpperCase().trim();
-    
-    // Try to find correct key by matching the key directly
-    for (const key of allKeys) {
-      if (key.toUpperCase() === correctValue) {
-        correctKey = key;
-        break;
-      }
-    }
-    
-    // If not found by key, log warning but proceed safely
-    if (!correctKey) {
-      console.warn('Could not identify correct answer key:', correctValue, 'Available keys:', allKeys);
-      // Fallback: try to match against options values
-      for (const [key, value] of Object.entries(options)) {
-        if (value && correctValue && value.includes(correctValue)) {
-          correctKey = key;
-          break;
-        }
-      }
+
+    if (allKeys.length < 2) {
+      console.warn('Not enough options for 50:50 power-up');
+      return;
     }
 
-    // Get all WRONG answer keys (exclude the correct one)
-    const wrongAnswers = allKeys.filter(key => key !== correctKey);
+    const protectedKeys = resolveProtectedOptionKeysForQuestion(currentQuestion);
+
+    if (!protectedKeys || protectedKeys.length === 0) {
+      console.error('50:50 aborted: unable to resolve protected answer keys safely', {
+        gameCode,
+        questionId: currentQuestion.id,
+        providedCorrect: currentQuestion.correct,
+        providedCorrectAnswer: currentQuestion.correctAnswer,
+        providedCorrectAnswerKey: currentQuestion.correctAnswerKey,
+        optionKeys: allKeys,
+      });
+      return;
+    }
+
+    // Strict mode: proceed only when exactly one correct candidate is resolved.
+    // Ambiguous payloads are safer to skip than risk hiding a potentially correct option.
+    if (protectedKeys.length !== 1) {
+      console.warn('50:50 aborted: ambiguous protected keys, strict guard prevented elimination', {
+        gameCode,
+        questionId: currentQuestion.id,
+        protectedKeys,
+      });
+      return;
+    }
+
+    // Eliminate only from keys that are definitely not protected as correct.
+    const wrongAnswers = allKeys.filter((key) => !protectedKeys.includes(key));
+
+    if (wrongAnswers.length === 0) {
+      console.warn('50:50 aborted: no wrong answers available to eliminate');
+      return;
+    }
     
-    console.log(`🎯 Correct key: ${correctKey}, Wrong answers: ${wrongAnswers.join(', ')}`);
+    console.log(`🎯 Protected keys: ${protectedKeys.join(', ')}, Eliminable wrong answers: ${wrongAnswers.join(', ')}`);
     
     // Randomly select UP TO 2 wrong answers to eliminate
     const toEliminate = [];
     const wrongCopy = [...wrongAnswers];
+    const eliminationCount = Math.min(2, wrongCopy.length);
     
-    while (toEliminate.length < 2 && wrongCopy.length > 0) {
+    while (toEliminate.length < eliminationCount && wrongCopy.length > 0) {
       const randomIndex = Math.floor(Math.random() * wrongCopy.length);
       toEliminate.push(wrongCopy[randomIndex]);
       wrongCopy.splice(randomIndex, 1);
     }
     
-    setEliminated50_50Options(toEliminate);
+    const sanitizedEliminated = toEliminate.filter((key) => !protectedKeys.includes(key));
+    setEliminated50_50Options(sanitizedEliminated);
     setHas50_50Used(true);
-    console.log(`✨ 50:50 Power-up used! Eliminated: ${toEliminate.join(', ')} | Correct answer ${correctKey} is SAFE ✓`);
+    console.log(`✨ 50:50 Power-up used! Eliminated: ${sanitizedEliminated.join(', ')} | Protected keys ${protectedKeys.join(', ')} are SAFE ✓`);
   };
 
   const handlePlayAgain = () => {
@@ -1392,13 +1510,14 @@ const GameUI = ({ user, onLogout }) => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          {Object.entries(currentQuestion.options || {}).map(
-            ([key, value]) => {
+          {(() => {
+            const safeProtectedKeys = resolveProtectedOptionKeysForQuestion(currentQuestion) || [];
+            return Object.entries(currentQuestion.options || {}).map(([key, value]) => {
               const isSelected = selectedAnswer === key;
-              const isEliminated = eliminated50_50Options.includes(key);
+              // UI fail-safe: never eliminate any key that could be the correct option.
+              const isEliminated = eliminated50_50Options.includes(key) && !safeProtectedKeys.includes(key);
               const correctKeyFromResult = result.correctAnswerKey ?? null;
               const isCorrect = Boolean(result.correct) && isSelected;
-              const isWrong = !result.correct && isSelected;
               const isCorrectAnswer = correctKeyFromResult
                 ? correctKeyFromResult === key
                 : result.correctAnswer &&
@@ -1429,8 +1548,8 @@ const GameUI = ({ user, onLogout }) => {
                   {value}
                 </button>
               );
-            }
-          )}
+            });
+          })()}
         </div>
 
         {/* ✅ POWERUP BUTTON - Below options grid, centered */}

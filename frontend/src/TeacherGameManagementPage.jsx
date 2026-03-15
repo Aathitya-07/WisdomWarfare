@@ -1482,12 +1482,22 @@ function TeacherGameManagementPage() {
       }
 
       const link = sendData.link || `${window.location.origin}/`;
+      const emailSent = sendData.ok !== false;
 
       try {
         await navigator.clipboard.writeText(link);
-        alert(`✅ Link ready and copied: ${link}`);
+        if (emailSent) {
+          alert(`✅ Link sent and copied: ${link}`);
+        } else {
+          alert(`⚠️ Email not sent via SMTP. Link copied for manual sharing:\n${link}\n\n${sendData.message || ""}`);
+        }
       } catch (e) {
-        window.prompt("Copy the play link:", link);
+        window.prompt(
+          emailSent
+            ? "Copy the play link:"
+            : "SMTP failed. Copy and share this play link:",
+          link
+        );
       }
     } catch (error) {
       console.error("Error sending link:", error);

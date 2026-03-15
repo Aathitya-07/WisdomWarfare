@@ -108,24 +108,34 @@ function GameUIRoute({ user, onLogout, onFinish }) {
   useEffect(() => {
     const validateAndSetGame = async () => {
       try {
+        const query = new URLSearchParams(location.search || "");
+        const typeFromQuery = query.get("gameType") || "";
+        const nameFromQuery = query.get("gameName") || "";
+
         const code =
           codeParam ||
           location.state?.gameCode ||
           localStorage.getItem("GAME_CODE") ||
           "";
 
+        const inferredTypeFromName = /crossword/i.test(nameFromQuery || location.state?.gameName || localStorage.getItem("GAME_NAME") || "")
+          ? "A. Crossword"
+          : "Wisdom Warfare";
+
         const type =
+          typeFromQuery ||
           location.state?.gameType ||
           localStorage.getItem("GAME_TYPE") ||
-          "QUIZ";
+          inferredTypeFromName;
 
         const name =
+          nameFromQuery ||
           location.state?.gameName ||
           localStorage.getItem("GAME_NAME") ||
           "";
 
-        if (!code || !type) {
-          console.warn("Missing game code or type");
+        if (!code) {
+          console.warn("Missing game code");
           navigate("/gamepage", { replace: true });
           return;
         }
@@ -148,7 +158,7 @@ function GameUIRoute({ user, onLogout, onFinish }) {
     };
 
     validateAndSetGame();
-  }, [codeParam, location.state, navigate]);
+  }, [codeParam, location.state, location.search, navigate]);
 
   if (isValidating) {
     return (
@@ -191,6 +201,7 @@ function GameUIRoute({ user, onLogout, onFinish }) {
 
 function AppRouterContainer() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -282,6 +293,32 @@ function AppRouterContainer() {
       localStorage.setItem("user_email", userObj.email);
       localStorage.setItem("user_role", roleStr);
     }
+
+    // If login came from an email invite link, continue to that specific game.
+    const query = new URLSearchParams(location.search || "");
+    const invite = query.get("invite");
+    const invitedGameCode = query.get("gameCode") || "";
+    const invitedGameName = query.get("gameName") || "";
+    const invitedGameType =
+      query.get("gameType") ||
+      (/crossword/i.test(invitedGameName) ? "A. Crossword" : "Wisdom Warfare");
+
+    if (invite && invitedGameCode) {
+      localStorage.setItem("GAME_CODE", invitedGameCode);
+      localStorage.setItem("GAME_TYPE", invitedGameType);
+      if (invitedGameName) {
+        localStorage.setItem("GAME_NAME", invitedGameName);
+      }
+
+      navigate(
+        `/play/${encodeURIComponent(invitedGameCode)}?gameType=${encodeURIComponent(
+          invitedGameType
+        )}&gameName=${encodeURIComponent(invitedGameName)}`,
+        { replace: true }
+      );
+      return;
+    }
+
     navigate("/home", { replace: true });
   };
 

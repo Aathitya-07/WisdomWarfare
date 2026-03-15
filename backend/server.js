@@ -8,6 +8,7 @@ const multer = require("multer");
 const csv = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
+const net = require("net");
 const fetch = require("node-fetch");
 const nodemailer = require("nodemailer");
 
@@ -1684,14 +1685,30 @@ app.post("/teacher/games/:id/send-link", async (req, res) => {
 
     const game = rows[0];
 
-    // 👉 this is where we build the link that students will use
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
+    // 👉 Build a game-specific deep link so each invite opens the exact game context
     const clientBase =
       process.env.CLIENT_BASE_URL ||
       process.env.FRONTEND_BASE ||
       "http://localhost:3000";
 
-    // Email should point to the Welcome page (root) instead of /play
-    const playLink = `${clientBase.replace(/\/$/, "")}/`;
+    const baseUrl = clientBase.replace(/\/$/, "");
+    const gameCode = String(game.game_code || "").trim();
+    const gameName = String(game.game_name || "Wisdom Warfare").trim();
+    const playPath = `/`;
+    const playQuery = new URLSearchParams({
+      invite: "1",
+      gameCode,
+      gameName,
+    }).toString();
+    const playLink = `${baseUrl}${playPath}?${playQuery}`;
 
     // -----------------------------
     //  Resolve recipients
@@ -1724,60 +1741,120 @@ app.post("/teacher/games/:id/send-link", async (req, res) => {
     }
 
     // -----------------------------
-    //  SMTP config
+    //  Email transport config
     // -----------------------------
+    const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
+    const senderEmail =
+      process.env.BREVO_SENDER_EMAIL ||
+      process.env.EMAIL_FROM ||
+      process.env.SMTP_USER ||
+      "";
+    const senderName = process.env.BREVO_SENDER_NAME || "Wisdom Warfare";
+
     const smtpHost = process.env.SMTP_HOST;
     const smtpPort = parseInt(process.env.SMTP_PORT || "465", 10);
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
+    const smtpUser = process.env.SMTP_USER || process.env.BREVO_SENDER_EMAIL;
+    const configuredSmtpPass = String(process.env.SMTP_PASS || "").trim();
+    const isPlaceholderSmtpPass =
+      !configuredSmtpPass ||
+      configuredSmtpPass === "YOUR_BREVO_SMTP_PASSWORD";
+    const smtpPass = isPlaceholderSmtpPass
+      ? String(process.env.BREVO_API_KEY || "").trim()
+      : configuredSmtpPass;
     const smtpSecure =
       process.env.SMTP_SECURE === "true" || process.env.SMTP_SECURE === true;
 
-    // If SMTP is not configured, don't crash – just return the link
-    if (!smtpHost || !smtpUser || !smtpPass) {
-      console.warn(
-        "SMTP not configured properly. Please set SMTP_HOST/SMTP_USER/SMTP_PASS in .env"
-      );
-      return res.json({
-        ok: false,
-        link: playLink,
-        game,
-        sent: 0,
-        message:
-          "SMTP not configured on server. Email not sent, but link is provided.",
-      });
-    }
+    const smtpReady = Boolean(smtpHost && smtpUser && smtpPass);
 
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpSecure,
-      auth: {
-        user: smtpUser,
-        pass: smtpPass,
-      },
-    });
+    const mailSubject = subject || `You're invited to play: ${gameName}`;
 
-    const mailSubject =
-      subject || `Join the game: ${game.game_name || "Wisdom Warfare"}`;
+    const optionalMessageText = message
+      ? `\n\nTeacher note:\n${String(message).trim()}`
+      : "";
 
     const mailText =
-      (message ||
-        `Join the game using this link: ${playLink}\n\nOr open the app and enter game code: ${game.game_code}`) +
-      `\n\n--\nSent by Wisdom Warfare`;
+      `You're invited to play ${gameName}!\n\n` +
+      `Open invite link (login first): ${playLink}\n\n` +
+      `Game details:\n` +
+      `- Game Name: ${gameName}\n` +
+      `- Game Code: ${gameCode}\n\n` +
+      `If the button does not work, open the app and enter code: ${gameCode}` +
+      `${optionalMessageText}\n\n--\nSent by Wisdom Warfare`;
 
-    const mailHtml =
-      (message
-        ? `<p>${message}</p>`
-        : `<p>Join the game using this link: <a href="${playLink}">${playLink}</a></p>
-           <p>Or open the app and enter game code: <strong>${game.game_code}</strong></p>`) +
-      `<hr/><p style="font-size:12px;color:#666">Sent by Wisdom Warfare</p>`;
+    const safeGameName = escapeHtml(gameName);
+    const safeGameCode = escapeHtml(gameCode);
+    const safePlayLink = escapeHtml(playLink);
+    const safeMessage = message ? escapeHtml(String(message).trim()) : "";
+
+    const mailHtml = `
+      <div style="margin:0;padding:0;background:#eef2ff;font-family:'Trebuchet MS',Verdana,Arial,sans-serif;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#eef2ff;padding:30px 12px;">
+          <tr>
+            <td align="center">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="640" style="max-width:640px;background:#ffffff;border-radius:22px;overflow:hidden;box-shadow:0 14px 38px rgba(15,23,42,0.16);">
+                <tr>
+                  <td style="background:linear-gradient(135deg,#0ea5e9 0%,#2563eb 55%,#1d4ed8 100%);padding:30px 30px 26px;color:#ffffff;">
+                    <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;opacity:0.92;">Wisdom Warfare Invite</div>
+                    <h1 style="margin:10px 0 0;font-size:32px;line-height:1.2;font-weight:800;">You're invited to play!</h1>
+                    <p style="margin:10px 0 0;font-size:16px;line-height:1.6;opacity:0.95;">A new game session is ready. Jump in with one click.</p>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:24px 30px 8px;">
+                    <div style="background:#f8fbff;border:1px solid #cfe3ff;border-radius:16px;padding:20px 18px;">
+                      <div style="font-size:13px;color:#1e3a8a;font-weight:700;text-transform:uppercase;letter-spacing:0.9px;margin-bottom:10px;">Game Details</div>
+                      <div style="font-size:16px;color:#0f172a;line-height:1.8;">
+                        <div><strong>Game Name:</strong> ${safeGameName}</div>
+                        <div style="margin-top:10px;"><strong>Game Code:</strong></div>
+                        <div style="display:inline-block;margin-top:4px;background:#e8f0ff;border:1px solid #c3d8ff;border-radius:10px;padding:8px 14px;font-family:Consolas,Monaco,monospace;font-size:24px;letter-spacing:2px;color:#1d4ed8;font-weight:800;">${safeGameCode}</div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+
+                ${safeMessage ? `
+                <tr>
+                  <td style="padding:10px 30px 0;">
+                    <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 16px;color:#78350f;font-size:14px;line-height:1.6;">
+                      <strong>Teacher note:</strong><br/>${safeMessage}
+                    </div>
+                  </td>
+                </tr>` : ""}
+
+                <tr>
+                  <td style="padding:26px 30px 10px;" align="center">
+                    <a href="${safePlayLink}" style="display:inline-block;background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);color:#ffffff;text-decoration:none;font-size:18px;font-weight:700;padding:14px 34px;border-radius:12px;box-shadow:0 8px 18px rgba(37,99,235,0.35);">Join This Game</a>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:8px 30px 24px;">
+                    <p style="margin:0;color:#334155;font-size:13px;line-height:1.7;word-break:break-all;">
+                      If the button doesn't open directly, paste this link in your browser:<br/>
+                      <a href="${safePlayLink}" style="color:#1d4ed8;text-decoration:underline;">${safePlayLink}</a>
+                    </p>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 30px;color:#64748b;font-size:12px;line-height:1.6;">
+                    This link is game-specific and opens the invited session only.<br/>
+                    Sent by Wisdom Warfare
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
 
     const first = toList[0];
     const bcc = toList.slice(1);
 
     const mailOptions = {
-      from: process.env.EMAIL_FROM || smtpUser,
+      from: process.env.EMAIL_FROM || senderEmail || smtpUser,
       to: first,
       bcc: bcc.length ? bcc : undefined,
       subject: mailSubject,
@@ -1785,20 +1862,101 @@ app.post("/teacher/games/:id/send-link", async (req, res) => {
       html: mailHtml,
     };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(
-      "Emails sent:",
-      info?.messageId || info,
-      "recipients:",
-      toList.length
-    );
+    let lastEmailError = null;
 
-    res.json({
-      ok: true,
+    // Primary: Brevo API send (uses BREVO_API_KEY directly).
+    if (brevoApiKey && senderEmail) {
+      try {
+        const brevoPayload = {
+          sender: {
+            email: senderEmail,
+            name: senderName,
+          },
+          to: [{ email: first }],
+          subject: mailSubject,
+          htmlContent: mailHtml,
+          textContent: mailText,
+        };
+
+        if (bcc.length > 0) {
+          brevoPayload.bcc = bcc.map((email) => ({ email }));
+        }
+
+        const brevoResp = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "api-key": brevoApiKey,
+          },
+          body: JSON.stringify(brevoPayload),
+        });
+
+        if (!brevoResp.ok) {
+          const brevoErrText = await brevoResp.text();
+          throw new Error(`Brevo API ${brevoResp.status}: ${brevoErrText}`);
+        }
+
+        const brevoData = await brevoResp.json().catch(() => ({}));
+        console.log("Emails sent via Brevo API:", brevoData?.messageId || "ok", "recipients:", toList.length);
+
+        return res.json({
+          ok: true,
+          link: playLink,
+          game,
+          sent: toList.length,
+          message: `Link sent to ${toList.length} recipients`,
+          provider: "brevo-api",
+        });
+      } catch (brevoErr) {
+        lastEmailError = brevoErr;
+        console.error("Brevo API send error:", brevoErr?.message || brevoErr);
+      }
+    }
+
+    // Fallback: SMTP transport.
+    if (smtpReady) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        const info = await transporter.sendMail(mailOptions);
+        console.log(
+          "Emails sent via SMTP:",
+          info?.messageId || info,
+          "recipients:",
+          toList.length
+        );
+
+        return res.json({
+          ok: true,
+          link: playLink,
+          game,
+          sent: toList.length,
+          message: `Link sent to ${toList.length} recipients`,
+          provider: "smtp",
+        });
+      } catch (mailErr) {
+        lastEmailError = mailErr;
+        console.error("SMTP send error:", mailErr?.message || mailErr);
+      }
+    }
+
+    return res.json({
+      ok: false,
       link: playLink,
       game,
-      sent: toList.length,
-      message: `Link sent to ${toList.length} recipients`,
+      sent: 0,
+      message:
+        "Email could not be sent via Brevo API or SMTP. Link is still generated for manual sharing.",
+      smtp_error: lastEmailError?.message || "No email transport configured",
     });
   } catch (err) {
     console.error("Error in /teacher/games/:id/send-link (send):", err);
@@ -3527,36 +3685,64 @@ function startNewGameSession(game_code = null) {
 // ----- START SERVER -----
 // ==========================================
 
-function startServer(port) {
-  server
-    .listen(port, async () => {
-      SERVER_PORT = server.address().port; // update actual port used
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const tester = net.createServer();
 
-      console.log(`🚀 Server running on port ${SERVER_PORT}`);
-      console.log(`📊 Admin panel: http://localhost:${SERVER_PORT}/admin`);
-      console.log(`🔍 Health check: http://localhost:${SERVER_PORT}/`);
-
-      setTimeout(async () => {
-        const count = await loadQuestions();
-
-        if (count === 0) {
-          console.log(
-            "❌ No questions found. Please use the admin panel to upload questions."
-          );
-        } else {
-          console.log(`✅ ${count} questions loaded successfully`);
-          console.log("⏳ Game is ready! Use the admin panel to start the game.");
-        }
-      }, 2000);
-    })
-    .on("error", (err) => {
+    tester.once("error", (err) => {
       if (err.code === "EADDRINUSE") {
-        console.log(`❌ Port ${port} is busy, trying port ${port + 1}...`);
-        startServer(port + 1);
+        resolve(false);
       } else {
-        console.error("Server error:", err);
+        resolve(false);
       }
     });
+
+    tester.once("listening", () => {
+      tester.close(() => resolve(true));
+    });
+
+    tester.listen(port);
+  });
 }
 
-startServer(DEFAULT_PORT);
+async function findAvailablePort(startPort) {
+  let port = startPort;
+  while (!(await isPortAvailable(port))) {
+    console.log(`❌ Port ${port} is busy, trying port ${port + 1}...`);
+    port += 1;
+  }
+  return port;
+}
+
+async function startServer(port) {
+  const availablePort = await findAvailablePort(port);
+
+  server.listen(availablePort, async () => {
+    SERVER_PORT = server.address().port; // update actual port used
+
+    console.log(`🚀 Server running on port ${SERVER_PORT}`);
+    console.log(`📊 Admin panel: http://localhost:${SERVER_PORT}/admin`);
+    console.log(`🔍 Health check: http://localhost:${SERVER_PORT}/`);
+
+    setTimeout(async () => {
+      const count = await loadQuestions();
+
+      if (count === 0) {
+        console.log(
+          "❌ No questions found. Please use the admin panel to upload questions."
+        );
+      } else {
+        console.log(`✅ ${count} questions loaded successfully`);
+        console.log("⏳ Game is ready! Use the admin panel to start the game.");
+      }
+    }, 2000);
+  });
+
+  server.on("error", (err) => {
+    console.error("Server error:", err);
+  });
+}
+
+startServer(DEFAULT_PORT).catch((err) => {
+  console.error("Fatal startup error:", err);
+});
