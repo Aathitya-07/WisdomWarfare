@@ -218,11 +218,12 @@ async function getCrosswordLeaderboardRows(limit = 50, sessionId = null) {
         s.attempts AS questions_answered,
         s.correct_answers,
         s.accuracy,
-        s.game_session_id
+        s.game_session_id,
+        s.last_updated
       FROM crossword_scores s
       JOIN users u ON u.user_id = s.user_id
       WHERE ${whereClauses.join(" AND ")}
-      ORDER BY s.score DESC, s.accuracy DESC
+      ORDER BY s.score DESC, s.accuracy DESC, s.last_updated ASC
       LIMIT ?
     `,
     params
@@ -434,6 +435,7 @@ async function finalizeCrosswordGame(gameCode, options = {}) {
     leaderboard,
     winner,
     reason,
+    startedAt: currentStatus.startedAt || null,
   });
 
   return updatedStatus;
@@ -1424,6 +1426,7 @@ io.on("connection", (socket) => {
             game_code,
             sessionId: status.sessionId,
             totalWords: session.clues.length,
+            startedAt: status.startedAt || null,
             remainingTimeMs: getRemainingCrosswordTimeMs(status),
             durationMs: CROSSWORD_GAME_DURATION_MS,
           });
@@ -1693,9 +1696,7 @@ io.on("connection", (socket) => {
         points
       });
 
-      if (session.solvedWords.size >= session.clues.length) {
-        await finalizeCrosswordGame(session.gameCode, { sessionId, reason: "completed" });
-      }
+      // Game ends only when the timer expires — each player plays independently.
     } catch (err) {
       console.error("crosswordSubmit error:", err);
       socket.emit("crosswordError", { error: "Server error" });

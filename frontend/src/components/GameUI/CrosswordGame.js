@@ -82,6 +82,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
   const playerExitedRef = useRef(false);
   const waitingForFreshStartRef = useRef(false);
   const pendingSubmissionWordIdsRef = useRef(new Set());
+  const gameStartedAtRef = useRef(null);
 
   // ─── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -268,6 +269,8 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
       const started = Boolean(data?.started);
       const durationMs = Number(data?.durationMs || 6 * 60 * 1000);
       const remainingTimeMs = Math.max(0, Number(data?.remainingTimeMs || 0));
+
+      if (started && data?.startedAt) gameStartedAtRef.current = Number(data.startedAt);
 
       if (!started) {
         gridLoadedRef.current = false;
@@ -462,6 +465,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
       if (Array.isArray(data?.leaderboard)) {
         setLeaderboard(data.leaderboard);
       }
+      if (data?.startedAt) gameStartedAtRef.current = Number(data.startedAt);
       setStatusMessage('Crossword game completed');
       setWaitingForTeacher(false);
       setTimeLeftMs(0);
@@ -524,6 +528,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
       setGameDurationMs(durationMs);
       setTimeLeftMs(remainingTimeMs);
       setGameEndsAt(Date.now() + remainingTimeMs);
+      if (data?.startedAt) gameStartedAtRef.current = Number(data.startedAt);
 
       if (alreadyLoaded) {
         setWaitingForTeacher(false);
@@ -1432,6 +1437,15 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
                 <div className="space-y-3 max-h-80 overflow-y-auto">
                   {leaderboard.map((player, index) => {
                     const isMe = user && player.email === user.email;
+                    const completionTime = (() => {
+                      const startMs = gameStartedAtRef.current;
+                      const finishMs = player.last_updated ? new Date(player.last_updated).getTime() : 0;
+                      if (!startMs || !finishMs || finishMs <= startMs) return null;
+                      const totalSecs = Math.round((finishMs - startMs) / 1000);
+                      const m = Math.floor(totalSecs / 60);
+                      const s = totalSecs % 60;
+                      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+                    })();
                     return (
                       <div
                         key={player.user_id || index}
@@ -1463,6 +1477,9 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
                           <div className="text-sm text-gray-300">
                             {player.correct_answers ?? 0} words
                           </div>
+                          {completionTime && (
+                            <div className="text-xs text-cyan-400 mt-0.5">⏱ {completionTime}</div>
+                          )}
                         </div>
                       </div>
                     );
