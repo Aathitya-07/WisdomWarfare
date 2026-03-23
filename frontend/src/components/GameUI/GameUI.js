@@ -227,7 +227,7 @@ const GameUI = ({ user, onLogout }) => {
   // ✅ Persist currentQuestion to localStorage
   useEffect(() => {
     if (!gameCode) return;
-    try {
+    try {k
       const sessionKey = `CURRENT_Q_${gameCode}`;
       if (currentQuestion) {
         localStorage.setItem(sessionKey, JSON.stringify(currentQuestion));
