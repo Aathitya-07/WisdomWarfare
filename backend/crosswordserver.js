@@ -210,6 +210,7 @@ function getCrosswordWaitingLeaderboardRows(gameCode) {
 
 function emitWaitingLeaderboard(gameCode) {
   const leaderboard = getCrosswordWaitingLeaderboardRows(gameCode);
+  console.log(`📊 [EMIT_WAITING_LB] Emitting waiting leaderboard for ${gameCode} with ${leaderboard.length} players:`, leaderboard);
   io.to(gameCode).emit("leaderboardUpdate", leaderboard);
   io.to(gameCode).emit("crosswordLeaderboardUpdate", leaderboard);
   return leaderboard;
@@ -337,6 +338,9 @@ async function upsertCrosswordScore(userId, sessionId) {
 
 async function emitCrosswordLeaderboard(gameCode, sessionId) {
   const leaderboard = await getCrosswordLeaderboardRows(50, sessionId);
+  
+  console.log(`📊 [EMIT_LEADERBOARD] Broadcasting leaderboard for game_code=${gameCode}, sessionId=${sessionId}, players=${leaderboard.length}`);
+  console.log(`📊 [EMIT_LEADERBOARD] Leaderboard data:`, leaderboard);
   
   // ✅ CRITICAL: Emit to BOTH game_code and sessionId rooms for sync consistency
   io.to(gameCode).emit("leaderboardUpdate", leaderboard);

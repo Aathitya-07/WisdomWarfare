@@ -340,7 +340,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
 
     // ── Connect ──────────────────────────────────────────────────────────────
     newSocket.on('connect', () => {
-      console.log('✅ [Crossword] Connected:', newSocket.id);
+      console.log('✅ [Crossword] Connected to:', API_BASE, 'socket id:', newSocket.id);
       if (!mountedRef.current) return;
       setConnected(true);
       setWaitingForTeacher(true);
@@ -364,6 +364,7 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
         setStatusMessage('Waiting for teacher to start the crossword');
       }
 
+      console.log('📤 [Crossword] Emitting joinGame event for game_code:', gameCode, 'user_id:', user.user_id || user.uid);
       newSocket.emit('joinGame', {
         game_code: gameCode,
         user_id: user.user_id || user.uid,
@@ -558,14 +559,21 @@ const CrosswordGame = ({ user, gameCode, gameName, onLogout }) => {
 
     // ── Leaderboard update ───────────────────────────────────────────────────
     const onLeaderboard = (data) => {
-      if (!mountedRef.current) return;
+      console.log('📊 [LEADERBOARD] Received leaderboard update:', data);
+      if (!mountedRef.current) {
+        console.log('📊 [LEADERBOARD] Component not mounted, ignoring update');
+        return;
+      }
       if (waitingForFreshStartRef.current) {
+        console.log('📊 [LEADERBOARD] Waiting for fresh start, ignoring update');
         return;
       }
       const rows = Array.isArray(data) ? data : data && Array.isArray(data.leaderboard) ? data.leaderboard : [];
+      console.log('📊 [LEADERBOARD] Setting leaderboard with', rows.length, 'players:', rows);
       setLeaderboard(rows);
 
       const currentPlayer = rows.find((player) => isSameUser(player));
+      console.log('📊 [LEADERBOARD] Current player found:', currentPlayer);
 
       if (currentPlayer) {
         setGameStats({
