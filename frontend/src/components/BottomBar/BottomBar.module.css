@@ -1,0 +1,81 @@
+.bottomBarContainer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 212, 255, 0.4);
+}
+
+.sectionTitle {
+  color: #00d4ff;
+  font-weight: 500;
+  letter-spacing: 2px;
+  font-size: 0.8rem;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.powerUpSection {
+  display: flex;
+  flex-direction: column;
+}
+
+.powerUps {
+   color: #00d4ff;
+  display: flex;
+  gap: 15px;
+}
+
+.powerUpitem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  width: 60px;
+}
+
+.iconContainer {
+  width: 50px;
+  height: 50px;
+  border: 1px solid #00d4ff;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 1.5rem;
+  color: #00d4ff;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.iconContainer:hover {
+  background-color: rgba(0, 212, 255, 0.2);
+  box-shadow: 0 0 10px #00d4ff;
+}
+
+.dashboardSection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.dashboardButton {
+  width: 50px;
+  height: 50px;
+  border: 1px solid #00d4ff;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 1.8rem;
+  color: #00d4ff;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  background-color: transparent;
+}
+
+.dashboardButton:hover {
+  background-color: rgba(0, 212, 255, 0.2);
+  box-shadow: 0 0 10px #00d4ff;
+}

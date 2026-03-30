@@ -1,0 +1,57 @@
+.rankingContainer {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.title {
+  text-align: center;
+  color: #00d4ff;
+  letter-spacing: 2px;
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+}
+
+.playerList {
+  list-style: none;
+   color: #00d4ff;
+  padding: 0;
+  margin: 0;
+}
+
+.playerItem {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.rank {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #00d4ff;
+  margin-right: 1rem;
+  width: 20px;
+  text-align: center;
+}
+
+.playerInfo {
+  flex-grow: 1;
+}
+
+.name {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 5px;
+  letter-spacing: 1px;
+}
+
+.scoreBarContainer {
+  height: 4px;
+  width: 100%;
+  background-color: rgba(0, 212, 255, 0.2);
+}
+
+.scoreBar {
+  height: 100%;
+  background-color: #00d4ff;
+  box-shadow: 0 0 8px #00d4ff;
+}
