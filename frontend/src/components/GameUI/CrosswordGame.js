@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { formatAccuracy } from '../../utils/helpers';
 
+// ✅ For crossword games, connect to dedicated crossword server
+// In dev, crossword server runs on port 4002; in prod, use the same base URL
 const API_BASE = (
+  process.env.REACT_APP_CROSSWORD_API_BASE ||
   process.env.REACT_APP_API_BASE ||
   (process.env.NODE_ENV === 'production'
     ? 'https://wisdomwarfare.onrender.com'
-    : 'http://localhost:4001')
+    : 'http://localhost:4002')
 ).replace(/\/$/, '');
 
 const hasPlayableGridPayload = (data) => {
